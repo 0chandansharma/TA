@@ -1,0 +1,39 @@
+name: Increment Version
+
+env:
+  SERVICE_EMAIL: github-actions-staging@dochq-staging.iam.gserviceaccount.com
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  increment-version:
+    name: Increment version and tag release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Git tag release
+        run: |
+          MAJOR_MINOR_PATCH=$(bash version.sh print_major_minor_patch)
+          git config --global user.name "github-ci"
+          git config --global user.email "${{ env.SERVICE_EMAIL }}"
+          if [ $(git tag -l v${MAJOR_MINOR_PATCH}) ]; then
+            echo "Deleting an existing tag."
+            git push origin master :refs/tags/v${MAJOR_MINOR_PATCH}
+          fi
+          git tag -fa v${MAJOR_MINOR_PATCH} -m "[skip ci] Version ${MAJOR_MINOR_PATCH}. Created by github-ci build."
+          git push origin master --tags
+
+      - name: Increment version
+        run: |
+          git pull
+          bash version.sh minor
+          git add version.txt
+          git commit -m "[skip ci] Updating version.txt with a new patch version."
+          git push

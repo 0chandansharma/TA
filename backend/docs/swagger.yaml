@@ -1,0 +1,680 @@
+basePath: /
+definitions:
+  handlers.BotHandlerResponse:
+    properties:
+      message:
+        type: string
+    type: object
+  handlers.CorrectAnswerRequest:
+    properties:
+      correct_answer:
+        type: string
+    required:
+    - correct_answer
+    type: object
+  handlers.PhysioCallRequest:
+    properties:
+      call_type:
+        description: Immediate or Scheduled
+        type: string
+      initiated_by:
+        type: string
+      scheduled_time:
+        description: Optional for immediate calls
+        type: string
+    required:
+    - call_type
+    - initiated_by
+    type: object
+  services.AIAnalysis:
+    properties:
+      analysed_results:
+        description: JSONB type
+      assessment_id:
+        type: string
+      created_at:
+        type: string
+    type: object
+  services.Assessment:
+    properties:
+      anatomy_id:
+        type: string
+      assessment_id:
+        type: string
+      assessment_type:
+        type: string
+      completion_percentage:
+        type: number
+      end_time:
+        type: string
+      start_time:
+        type: string
+      status:
+        type: string
+      user_id:
+        type: string
+    type: object
+  services.ChatMessage:
+    properties:
+      response:
+        description: AI response (optional)
+        type: string
+      user:
+        type: string
+    type: object
+  services.ChatRequest:
+    properties:
+      chat_history:
+        items:
+          $ref: '#/definitions/services.ChatMessage'
+        type: array
+    type: object
+  services.ChatResponse:
+    properties:
+      response:
+        type: string
+    type: object
+  services.PhysioCall:
+    properties:
+      assessment_id:
+        type: string
+      call_id:
+        type: string
+      call_status:
+        description: Scheduled, Completed, Cancelled
+        type: string
+      call_type:
+        description: Immediate or Scheduled
+        type: string
+      created_at:
+        type: string
+      initiated_by:
+        description: User or System
+        type: string
+      scheduled_time:
+        description: NULL for immediate calls
+        type: string
+    type: object
+  services.Question:
+    properties:
+      assessment_id:
+        type: string
+      correct_answer:
+        description: Correct answer if applicable
+        type: string
+      created_at:
+        type: string
+      input_mode:
+        description: 'Input mode: text, speech, video'
+        type: string
+      options:
+        description: JSONB type for options
+      question:
+        type: string
+      question_id:
+        type: string
+      user_answer:
+        description: User's selected answer
+        type: string
+    type: object
+  services.ROMAnalysis:
+    properties:
+      analysis_result:
+        type: string
+      assessment_id:
+        type: string
+      created_at:
+        type: string
+      pose_model_data:
+        description: JSONB type for pose model data
+    type: object
+  services.SelfCarePlan:
+    properties:
+      assessment_id:
+        type: string
+      created_at:
+        type: string
+      critical_flag:
+        type: boolean
+      plan_name:
+        type: string
+      suggested_exercises:
+        description: JSONB for exercises
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: API documentation for AI-Bot-DeeCogs
+  title: AI-Bot-DeeCogs API
+  version: "1.0"
+paths:
+  /assessments:
+    post:
+      consumes:
+      - application/json
+      description: Creates a new assessment for the user
+      parameters:
+      - description: Assessment Data
+        in: body
+        name: assessment
+        required: true
+        schema:
+          additionalProperties:
+            type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/services.Assessment'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Start a new assessment
+      tags:
+      - Assessments
+  /assessments/:id/physio-calls:
+    get:
+      description: Retrieves all physio calls for a specific assessment
+      parameters:
+      - description: Assessment ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/services.PhysioCall'
+            type: array
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get physio calls
+      tags:
+      - Physio Calls
+  /assessments/{id}:
+    get:
+      description: Retrieves the details of a specific assessment
+      parameters:
+      - description: Assessment ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/services.Assessment'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get assessment details
+      tags:
+      - Assessments
+  /assessments/{id}/ai-analysis:
+    get:
+      description: Retrieves AI-predicted results for an assessment
+      parameters:
+      - description: Assessment ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/services.AIAnalysis'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get AI analysis results
+      tags:
+      - AI Analysis
+  /assessments/{id}/chat:
+    post:
+      consumes:
+      - application/json
+      description: Sends chat history to an AI model for physiotherapy assessment
+      parameters:
+      - description: Assessment ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Chat History
+        in: body
+        name: chat_body
+        required: true
+        schema:
+          $ref: '#/definitions/services.ChatRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/services.ChatResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Send chat history for AI response
+      tags:
+      - Assessments
+  /assessments/{id}/physio-calls:
+    post:
+      consumes:
+      - application/json
+      description: Schedules a physio call (immediate or scheduled) for a specific
+        assessment
+      parameters:
+      - description: Assessment ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Call Details
+        in: body
+        name: call_data
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.PhysioCallRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/services.PhysioCall'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Schedule a physio call
+      tags:
+      - Physio Calls
+  /assessments/{id}/rom:
+    get:
+      description: Retrieves pose model data and analysis results for an assessment
+      parameters:
+      - description: Assessment ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/services.ROMAnalysis'
+            type: array
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get ROM analysis data
+      tags:
+      - ROM
+    post:
+      consumes:
+      - application/json
+      description: Submits pose model data and analysis results for an assessment
+      parameters:
+      - description: Assessment ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: ROM Data
+        in: body
+        name: rom_data
+        required: true
+        schema:
+          $ref: '#/definitions/services.ROMAnalysis'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Submit ROM analysis data
+      tags:
+      - ROM
+  /assessments/{id}/self-care-plans:
+    get:
+      description: Retrieves personalized self-care plans for an assessment
+      parameters:
+      - description: Assessment ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/services.SelfCarePlan'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get self-care plans
+      tags:
+      - Self-Care Plans
+  /assessments/{id}/status:
+    post:
+      consumes:
+      - application/json
+      description: Updates the status of an assessment
+      parameters:
+      - description: Assessment ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Status Update
+        in: body
+        name: status
+        required: true
+        schema:
+          additionalProperties:
+            type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Update assessment status
+      tags:
+      - Assessments
+  /auth/loginuser:
+    post:
+      consumes:
+      - application/json
+      description: Authenticates a user with email and password
+      parameters:
+      - description: User Credentials
+        in: body
+        name: credentials
+        required: true
+        schema:
+          additionalProperties:
+            type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Login user
+      tags:
+      - Auth
+  /bothandler:
+    get:
+      description: This is a bothandler API for demonstration purposes
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.BotHandlerResponse'
+      summary: bothandler API
+      tags:
+      - demo
+  /questions/{id}:
+    get:
+      description: Fetches a question along with all metadata by its ID
+      parameters:
+      - description: Question ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/services.Question'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get a question by ID
+      tags:
+      - Questionnaires
+  /questions/update_answer/{id}:
+    patch:
+      consumes:
+      - application/json
+      description: Updates the correct answer for a question and fetches the next
+        question from the AI model
+      parameters:
+      - description: Question ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Correct Answer
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.CorrectAnswerRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/services.Question'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Update correct answer and fetch the next question
+      tags:
+      - Questionnaires
+  /users:
+    post:
+      consumes:
+      - application/json
+      description: Creates a new user with the provided details
+      parameters:
+      - description: User Data
+        in: body
+        name: user
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Create a new user
+      tags:
+      - Users
+  /users/{id}:
+    get:
+      description: Retrieves details of a user by ID
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get user details
+      tags:
+      - Users
+swagger: "2.0"

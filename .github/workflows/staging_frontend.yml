@@ -1,0 +1,101 @@
+name: Staging Build and Deploy (FE)
+
+env:
+  SERVICE_EMAIL: github-actions-staging@dochq-staging.iam.gserviceaccount.com
+  PROJECT_ID: dochq-staging
+  SERVICE: triage-frontend
+  ENVIRONMENT: staging
+  REGION: europe-west1
+
+on:
+  workflow_dispatch
+
+jobs:
+  docker-publish:
+    name: Docker image publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: auth service account
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: '${{ secrets.STAGING_CLOUD_RUN_KEY_JSON }}'
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: |
+          gcloud auth configure-docker europe-west2-docker.pkg.dev && \
+          gcloud config set project ${{ env.PROJECT_ID }}
+
+      - name: Docker Build
+        run: |
+          MAJOR_MINOR_PATCH=$(bash version.sh print_major_minor_patch)
+          CONTAINER_URI=europe-west2-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE }}/${{ env.SERVICE }}
+          docker build \
+            -t ${CONTAINER_URI}:latest \
+            -t ${CONTAINER_URI}:${MAJOR_MINOR_PATCH} \
+            --build-arg="APP_VERSION=${MAJOR_MINOR_PATCH}" \
+            ./frontend
+      
+      - name: Docker Publish
+        run: |
+          MAJOR_MINOR_PATCH=$(bash version.sh print_major_minor_patch)
+          docker push europe-west2-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE }}/${{ env.SERVICE }}:latest  
+          docker push europe-west2-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE }}/${{ env.SERVICE }}:${MAJOR_MINOR_PATCH}
+
+      - name: Cleanup revisions
+        run: |
+          gcloud run revisions list \
+            --region=${{ env.REGION }} \
+            --service=${{ env.SERVICE }} \
+            --sort-by="~createTime" \
+            --format="value(metadata.name)" \
+            | tail -n +11 \
+            | xargs -I {} gcloud run revisions delete {} \
+            --region=${{ env.REGION }} \
+            --quiet
+
+      - name: Cleanup artifacts
+        run: |
+          CONTAINER_URI=europe-west2-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE }}/${{ env.SERVICE }}
+          gcloud artifacts docker images list ${CONTAINER_URI} \
+            --sort-by="~updateTime" \
+            --format="value(DIGEST)" \
+            | tail -n +11 \
+            | xargs -I {} gcloud artifacts docker images delete ${CONTAINER_URI}@{} \
+            --quiet --delete-tags
+
+  release:
+    name: Release
+    needs: [docker-publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: auth service account
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: '${{ secrets.STAGING_CLOUD_RUN_KEY_JSON }}'
+            
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: |
+          gcloud auth configure-docker europe-west2-docker.pkg.dev && \
+          gcloud config set project ${{ env.PROJECT_ID }}
+
+      - name: Deploy
+        run: |
+          MAJOR_MINOR_PATCH=$(bash version.sh print_major_minor_patch)
+          IMAGE=europe-west2-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE }}/${{ env.SERVICE }}:${MAJOR_MINOR_PATCH}
+          gcloud run deploy ${{ env.SERVICE }} --image ${IMAGE} --region ${{ env.REGION }} --allow-unauthenticated --cpu-throttling \

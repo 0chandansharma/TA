@@ -1,0 +1,56 @@
+version: "3.3"
+
+services:
+    postgresql:
+        image: postgres:14.12
+        volumes:
+            - db:/var/lib/postgresql/data
+        expose:
+            - "5432"    
+        ports:
+            - "5432:5432"
+        environment:
+            - POSTGRES_USER=postgres
+            - POSTGRES_PASSWORD=postgres
+            - POSTGRES_DB=aibot
+    migrations:
+        image: golang:1.22-alpine
+        working_dir: /migrations
+        command: go run cmd/migrate/main.go
+        environment:
+            - DATABASE_URL=user=postgres password=postgres host=postgresql port=5432 dbname=aibot sslmode=disable
+        volumes:
+            - ./backend:/migrations
+        depends_on:
+            - postgresql 
+    backend:
+        image: golang:1.22-alpine
+        working_dir: /app
+        command: go run cmd/app/main.go
+        environment:
+            - DATABASE_URL=user=postgres password=postgres host=postgresql port=5432 dbname=aibot sslmode=disable
+        ports:
+            - "8080:8080"
+        expose:
+          - "8080"
+        volumes:
+            - ./backend:/app
+        depends_on:
+            - postgresql
+            - migrations
+    frontend:
+        image: node:18-alpine
+        working_dir: /app
+        command: sh -c "npm install && npm start"
+        ports:
+            - "3000:3000"
+        expose:
+            - "3000" 
+        volumes:
+            - ./frontend:/app
+            - /app/node_modules  # Prevent node_modules from being overridden
+        depends_on:
+            - backend
+volumes:
+  db:
+    driver: local

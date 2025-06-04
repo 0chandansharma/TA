@@ -1,0 +1,18 @@
+# Config file for Air
+# For more options, see https://github.com/cosmtrek/air
+
+[build]
+cmd = "go build -o ./tmp/main cmd/main.go"  # Build command
+bin = "./tmp/main"                             # Binary output location
+full_bin = "APP_ENV=dev ./tmp/main"            # Command to run binary
+log = "air_errors.log"                         # Log file for errors
+exclude_dir = ["tmp", "docs", "testdata"]      # Excluded directories
+exclude_file = ["air.toml"]
+
+[log]
+color = true                                   # Colorize logs
+timestamp = true                               # Add timestamps
+
+[misc]
+clean_on_exit = true                           # Clean up temp files on exit
+

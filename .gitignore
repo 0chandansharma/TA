@@ -1,0 +1,137 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+
+# API Keys and Credentials
+credentials.json
+service-account-key.json
+*.key
+*.pem
+
+# Build outputs
+build/
+dist/
+out/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go specific
+*.mod
+*.sum
+/backend/cmd/app/app
+/backend/cmd/migrate/migrate
+/backend/logfile
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Testing
+coverage/
+.nyc_output
+*.lcov
+.coverage
+.coverage.*
+htmlcov/
+
+# Temporary files
+*.tmp
+*.temp
+*.cache
+.cache/
+tmp/
+temp/
+
+# Database
+*.sqlite
+*.sqlite3
+*.db
+postgres-data/
+
+# Docker volumes
+db/
+pgdata/
+
+# Production builds
+/frontend/build
+/frontend/.next
+/frontend/out
+
+# Misc
+*.orig
+*.rej
+*.bak
+.history/
+.yarn/
+.pnp.*
+.yarn-integrity
+
+# React specific
+.eslintcache
+.parcel-cache
+
+# Google Cloud
+gcloud-key.json
+.gcloud/
+*-staging-*.json
+dochq-staging-*.json
+
+# Certificates
+*.crt
+*.csr
+
+# Backup files
+backup/
+*.backup
+*.dump
+
+# Local development
+/backend/air.tmp
+.air.toml.tmp
