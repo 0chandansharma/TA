@@ -1,3 +1,4 @@
+// app-google-speech.js - Fixed version with detailed logging
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import './assets/styles/app.css';
 import AiAvatar from './core/components/AiAvatar';
@@ -24,6 +25,12 @@ export default function App() {
     const assessmentIdRef = useRef(null);
     const [step, setStep] = useState(0);
     const [identifiedBodyPart, setIdentifiedBodyPart] = useState(null);
+    
+    // CRITICAL: Add refs to prevent duplicate API calls and track state
+    const isTransitioningToQnARef = useRef(false);
+    const hasInitializedQnARef = useRef(false);
+    const lastProcessedQuestionRef = useRef(null);
+    const qnaApiCallInProgressRef = useRef(false);
 
     const mediaRecorderRef = useRef(null);
     const audioChunksRef = useRef([]);
@@ -36,111 +43,139 @@ export default function App() {
 
     // Helper function to convert chat history format for QnA API
     const convertChatHistoryToQnAFormat = useCallback((chatHist) => {
-        console.log('=== CONVERTING CHAT HISTORY FORMAT ===');
-        console.log('Input chat history:', chatHist);
+        console.log('🔄 [CONVERT] Converting chat history format');
+        console.log('🔄 [CONVERT] Input length:', chatHist.length);
         
         const converted = chatHist.map(chat => ({
             user: chat.user,
             assistant: chat.response || chat.assistant || ""
-        })).filter(chat => chat.user && chat.user.trim() !== ""); // Remove empty user messages
+        })).filter(chat => chat.user && chat.user.trim() !== "");
         
-        console.log('Converted QnA history:', converted);
+        console.log('🔄 [CONVERT] Output length:', converted.length);
         return converted;
     }, []);
 
-    // Send answer to QnA API (for questionnaire phase) - FIXED
+    // Send answer to QnA API (for questionnaire phase) - FIXED with duplicate prevention
     const sendAnswerToAPI = useCallback(async (answer) => {
-        console.log('=== SEND ANSWER TO API ===');
-        console.log('Answer:', answer);
-        console.log('Assessment ID from ref:', assessmentIdRef.current);
-        console.log('Assessment ID from state:', assessmentId);
+        console.log('📤 [QNA-API] sendAnswerToAPI called');
+        console.log('📤 [QNA-API] Answer:', answer);
+        console.log('📤 [QNA-API] Assessment ID:', assessmentIdRef.current);
+        console.log('📤 [QNA-API] API call in progress?', qnaApiCallInProgressRef.current);
+        console.log('📤 [QNA-API] Is transitioning?', isTransitioningToQnARef.current);
         
-        // Use ref value as it's more reliable
-        const currentAssessmentId = assessmentIdRef.current;
-        
-        if (!currentAssessmentId) {
-            console.error('=== ERROR: Assessment ID is undefined ===');
-            console.log('Assessment ID ref:', assessmentIdRef.current);
-            console.log('Assessment ID state:', assessmentId);
+        // CRITICAL: Prevent duplicate API calls
+        if (qnaApiCallInProgressRef.current) {
+            console.log('⚠️ [QNA-API] API call already in progress, SKIPPING');
             return;
         }
         
+        // Prevent calls during transition
+        if (isTransitioningToQnARef.current && answer === "Let's continue with the assessment") {
+            console.log('⚠️ [QNA-API] Still transitioning, SKIPPING initial call');
+            return;
+        }
+        
+        const currentAssessmentId = assessmentIdRef.current;
+        
+        if (!currentAssessmentId) {
+            console.error('❌ [QNA-API] Assessment ID is undefined');
+            return;
+        }
+        
+        // Set flag to prevent duplicate calls
+        qnaApiCallInProgressRef.current = true;
         setStatus("Processing answer...");
 
         // Create the message with user and prepare for response
         const newMessage = { user: answer, assistant: "" };
         
-        setQnAHistory(prevHistory => {
-            console.log('Previous QnA history:', prevHistory);
-            const updatedHistory = [...prevHistory, newMessage];
-            console.log('Updated QnA history:', updatedHistory);
+        // Update QnA history first
+        const updatedHistory = [...QnAHistory, newMessage];
+        setQnAHistory(updatedHistory);
+        
+        const bodyChat = {
+            chat_history: updatedHistory
+        };
+
+        console.log('📤 [QNA-API] Making API request');
+        console.log('📤 [QNA-API] URL:', `/assessments/${currentAssessmentId}/questionnaires`);
+        console.log('📤 [QNA-API] Payload:', JSON.stringify(bodyChat, null, 2));
+
+        try {
+            const res = await mainService.chatWithQnAAI(bodyChat, '', currentAssessmentId);
             
-            const bodyChat = {
-                chat_history: updatedHistory
-            };
-
-            console.log('=== QnA API REQUEST ===');
-            console.log('URL will be:', `/assessments/${currentAssessmentId}/questionnaires`);
-            console.log('Payload:', JSON.stringify(bodyChat, null, 2));
-
-            mainService.chatWithQnAAI(bodyChat, '', currentAssessmentId)
-                .then(async (res) => {
-                    console.log('=== QnA API RESPONSE ===');
-                    console.log('Response:', JSON.stringify(res, null, 2));
-                    
-                    if (res?.success) {
-                        setStage("QnA");
-                        
-                        const questionRes = res.data;
-                        
-                        // Extract question text properly
-                        const questionText = questionRes.question || questionRes.response || "Please continue...";
-                        
-                        // Update the question object
-                        const updatedQuestion = {
-                            ...questionRes,
-                            question: questionText
-                        };
-                        
-                        setNextQuestion(updatedQuestion);
-                        
-                        // Update the last message with the assistant's response
-                        setQnAHistory(prev => {
-                            const updated = [...prev];
-                            if (updated.length > 0) {
-                                updated[updated.length - 1].assistant = questionText;
-                            }
-                            console.log('Updated QnA with assistant response:', updated);
-                            return updated;
-                        });
-                        
-                        // Speak the question without auto-starting listening
-                        setCurrentDisplayText(questionText);
-                        await speakText(questionText, true, false);
-                        
-                        setStatus(""); // Clear status after speaking
-                        
-                        // Check if we need to move to next phase
-                        if (questionRes.action === "rom_api") {
-                            console.log('Moving to ROM phase');
-                            setStep(20); // Move to ROM phase
-                        } else if (questionRes.action === "dashboard_api") {
-                            console.log('Moving to Dashboard phase');
-                            setStep(24); // Move to dashboard
-                        }
+            console.log('✅ [QNA-API] Response received');
+            console.log('✅ [QNA-API] Success?', res?.success);
+            
+            if (res?.success) {
+                setStage("QnA");
+                
+                const questionRes = res.data;
+                const questionText = questionRes.question || questionRes.response || "Please continue...";
+                
+                console.log('📋 [QNA-API] Question text:', questionText);
+                console.log('📋 [QNA-API] Last processed question:', lastProcessedQuestionRef.current);
+                
+                // Check if this is a duplicate question
+                if (lastProcessedQuestionRef.current === questionText) {
+                    console.log('⚠️ [QNA-API] Duplicate question detected, SKIPPING update');
+                    qnaApiCallInProgressRef.current = false;
+                    setStatus("");
+                    return;
+                }
+                
+                lastProcessedQuestionRef.current = questionText;
+                
+                // Update the question object
+                const updatedQuestion = {
+                    ...questionRes,
+                    question: questionText,
+                    timestamp: Date.now() // Add timestamp for uniqueness
+                };
+                
+                console.log('📋 [QNA-API] Setting next question');
+                setNextQuestion(updatedQuestion);
+                
+                // Update the QnA history with assistant response
+                setQnAHistory(prev => {
+                    const updated = [...prev];
+                    if (updated.length > 0) {
+                        updated[updated.length - 1].assistant = questionText;
                     }
-                })
-                .catch(error => {
-                    console.error('QnA API error:', error);
-                    setStatus("Error getting next question");
+                    return updated;
                 });
-            
-            return updatedHistory;
-        });
-    }, [mainService]);
+                
+                // Display and speak the question
+                setCurrentDisplayText(questionText);
+                
+                // Cancel any ongoing speech before speaking
+                window.speechSynthesis.cancel();
+                await speakText(questionText, true, false);
+                
+                setStatus("");
+                
+                // Check for phase transitions
+                if (questionRes.action === "rom_api") {
+                    console.log('🎯 [QNA-API] Moving to ROM phase');
+                    setStep(20);
+                } else if (questionRes.action === "dashboard_api") {
+                    console.log('🎯 [QNA-API] Moving to Dashboard phase');
+                    setStep(24);
+                }
+            }
+        } catch (error) {
+            console.error('❌ [QNA-API] Error:', error);
+            setStatus("Error getting next question");
+        } finally {
+            // Reset the flag
+            qnaApiCallInProgressRef.current = false;
+            console.log('🔓 [QNA-API] API call completed, flag reset');
+        }
+    }, [QnAHistory, mainService]);
 
     // Initialize media recorder
     const initMediaRecorder = useCallback(async () => {
+        console.log('🎤 [MEDIA] Initializing media recorder');
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ 
                 audio: {
@@ -164,6 +199,7 @@ export default function App() {
             };
 
             recorder.onstop = async () => {
+                console.log('🎤 [MEDIA] Recording stopped, chunks:', audioChunksRef.current.length);
                 const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
                 audioChunksRef.current = [];
                 
@@ -183,14 +219,16 @@ export default function App() {
             source.connect(analyserNode);
             setAnalyser(analyserNode);
             
+            console.log('✅ [MEDIA] Media recorder initialized');
         } catch (error) {
-            console.error('Error initializing media recorder:', error);
+            console.error('❌ [MEDIA] Error initializing:', error);
             setStatus("Microphone access denied");
         }
     }, []);
 
     // Text to speech handler
     const speakText = useCallback(async (text, isAiSpeaking = false, listenNext = true, stepNumber = 0) => {
+        console.log('🔊 [TTS] Speaking:', text.substring(0, 50) + '...');
         try {
             setAiSpeaking(true);
             if (isAiSpeaking) {
@@ -202,22 +240,18 @@ export default function App() {
     
             setAiSpeaking(false);
             setStatus("");
+            
+            console.log('🔊 [TTS] Speech completed, listenNext:', listenNext, 'step:', step);
     
             // Only auto-start listening for chat phase (step < 11), not QnA phase
             if (listenNext && isMountedRef.current && step < 11) {
-                console.log('Auto-starting listening after AI speech');
+                console.log('🎤 [TTS] Auto-starting listening after speech');
                 startListening();
-            } else {
-                console.log('Not auto-starting listening (QnA phase or no listen):', {
-                    listenNext,
-                    isMounted: isMountedRef.current,
-                    step,
-                    shouldListen: step < 11
-                });
             }
     
             // Handle video step timing
             if (stepNumber === 8) {
+                console.log('📹 [TTS] Starting video countdown');
                 setTimeout(() => {
                     setCurrentDisplayText("");
                     setStep(stepNumber);
@@ -231,7 +265,7 @@ export default function App() {
                 setTimeout(() => setCurrentDisplayText(""), 5000);
             }
         } catch (error) {
-            console.error('Text-to-Speech error:', error);
+            console.error('❌ [TTS] Error:', error);
             setAiSpeaking(false);
             setStatus("");
             
@@ -251,7 +285,9 @@ export default function App() {
 
     // Start listening
     const startListening = useCallback(() => {
+        console.log('🎤 [LISTEN] Starting to listen');
         if (!mediaRecorderRef.current) {
+            console.log('🎤 [LISTEN] No media recorder, initializing');
             initMediaRecorder();
             return;
         }
@@ -262,10 +298,12 @@ export default function App() {
             audioChunksRef.current = [];
             
             mediaRecorderRef.current.start();
+            console.log('✅ [LISTEN] Recording started');
             
             // Auto-stop after 5 seconds
             setTimeout(() => {
                 if (mediaRecorderRef.current?.state === 'recording') {
+                    console.log('⏱️ [LISTEN] Auto-stopping after 5 seconds');
                     stopListening();
                 }
             }, 5000);
@@ -274,35 +312,35 @@ export default function App() {
 
     // Stop listening
     const stopListening = useCallback(() => {
+        console.log('🛑 [LISTEN] Stopping listening');
         if (mediaRecorderRef.current?.state === 'recording') {
             mediaRecorderRef.current.stop();
             setIsListening(false);
+            console.log('✅ [LISTEN] Recording stopped');
         }
     }, []);
 
     // Handle speech to text
     const handleSpeechToText = useCallback(async (audioBlob) => {
+        console.log('🎤 [STT] Processing speech, blob size:', audioBlob.size);
         try {
             setStatus("Processing speech...");
             const transcript = await googleSpeechService.speechToText(audioBlob);
             
-            console.log('=== SPEECH TO TEXT RESULT ===');
-            console.log('Transcript:', transcript);
-            console.log('Current Step:', step);
+            console.log('📝 [STT] Transcript:', transcript);
+            console.log('📝 [STT] Current Step:', step);
             
             if (transcript && transcript.trim()) {
                 // Determine which API to call based on current step
                 if (step >= 11) {
-                    // We're in QnA phase
-                    console.log('=== CALLING QnA API FROM SPEECH ===');
+                    console.log('📝 [STT] In QnA phase, sending to QnA API');
                     await sendAnswerToAPI(transcript);
                 } else {
-                    // We're in chat phase
-                    console.log('=== CALLING CHAT API FROM SPEECH ===');
+                    console.log('📝 [STT] In chat phase, sending to chat API');
                     await sendChat(transcript, assessmentIdRef.current);
                 }
             } else {
-                console.log('No transcript received or empty');
+                console.log('⚠️ [STT] No transcript or empty');
                 setStatus("Could not understand. Please try again.");
                 setTimeout(() => {
                     if (isMountedRef.current && step < 11) {
@@ -311,7 +349,7 @@ export default function App() {
                 }, 1000);
             }
         } catch (error) {
-            console.error('Speech-to-Text error:', error);
+            console.error('❌ [STT] Error:', error);
             setStatus("Error processing speech. Please try again.");
             setTimeout(() => {
                 if (isMountedRef.current && step < 11) {
@@ -321,13 +359,12 @@ export default function App() {
         }
     }, [step, sendAnswerToAPI]);
 
-    // Send chat message (for initial conversation)
+    // Send chat message (for initial conversation) - FIXED
     const sendChat = useCallback(async (message, assID, isVideo = false) => {
-        console.log('=== SENDCHAT START ===');
-        console.log('Message:', message);
-        console.log('AssessmentID:', assID);
-        console.log('IsVideo:', isVideo);
-        console.log('Current Step:', step);
+        console.log('💬 [CHAT] sendChat called');
+        console.log('💬 [CHAT] Message:', isVideo ? 'VIDEO' : message);
+        console.log('💬 [CHAT] AssessmentID:', assID);
+        console.log('💬 [CHAT] Step:', step);
         
         setStatus("Talking to the AI...");
         setIsListening(false);
@@ -339,33 +376,28 @@ export default function App() {
         }
     
         setChatHistory(prevChats => {
-            console.log('Previous chat history:', prevChats);
             let updatedChats = [...prevChats];
             let bodyChat = {};
             
             if (isVideo) {
-                // For video, don't add to chat history as user message
                 bodyChat = {
                     chat_history: updatedChats,
                     video: message
                 };
-                console.log('=== VIDEO REQUEST PAYLOAD ===');
-                console.log('Body:', JSON.stringify(bodyChat, null, 2));
+                console.log('📹 [CHAT] Sending video request');
             } else {
-                // For text, add to chat history normally
                 const newMessage = { user: message };
                 updatedChats = [...prevChats, newMessage];
                 bodyChat = {
                     chat_history: updatedChats
                 };
-                console.log('=== TEXT REQUEST PAYLOAD ===');
-                console.log('Body:', JSON.stringify(bodyChat, null, 2));
+                console.log('💬 [CHAT] Sending text request');
             }
     
             mainService.chatWithAI(bodyChat, '', assID)
                 .then(async (res) => {
-                    console.log('=== AI RESPONSE ===');
-                    console.log('Response:', JSON.stringify(res, null, 2));
+                    console.log('✅ [CHAT] Response received');
+                    console.log('✅ [CHAT] Success?', res?.success);
                     
                     if (res?.success) {
                         if (!isStart) {
@@ -375,11 +407,15 @@ export default function App() {
                         const chatRes = res.data.response;
                         const next_action = res.data.action;
                         
-                        console.log('AI Response:', chatRes);
-                        console.log('Next Action:', next_action);
+                        console.log('💬 [CHAT] Action:', next_action);
                         
                         if (isVideo) {
-                            // Handle video response - add hardcoded body part identification
+                            console.log('🎯 [CHAT] Processing video response');
+                            
+                            // Set transition flag
+                            isTransitioningToQnARef.current = true;
+                            hasInitializedQnARef.current = false;
+                            
                             const identifiedPart = "lower back";
                             setIdentifiedBodyPart(identifiedPart);
                             
@@ -390,40 +426,41 @@ export default function App() {
                             
                             setChatHistory(latestChats => {
                                 const updated = [...latestChats, bodyPartMessage];
-                                console.log('Added body part identification to chat history:', updated);
+                                console.log('💬 [CHAT] Updated chat history with body part');
                                 return updated;
                             });
     
-                            // Convert existing chat history to QnA format and initialize QnA
-                            console.log('=== MOVING TO QnA STAGE ===');
-                            
-                            // PROPERLY SET STEP TO 11 IMMEDIATELY
+                            // Move to QnA stage
+                            console.log('🎯 [CHAT] Setting step to 11');
                             setStep(11);
                             setAnalyser(false);
                             
-                            // Convert chat history and initialize QnA
-                            setTimeout(() => {
-                                setChatHistory(currentChatHistory => {
-                                    console.log('Converting chat history to QnA format:', currentChatHistory);
-                                    const convertedHistory = convertChatHistoryToQnAFormat(currentChatHistory);
-                                    setQnAHistory(convertedHistory);
-                                    
-                                    // Start first QnA question
-                                    setTimeout(() => {
-                                        console.log('=== STARTING QnA SESSION WITH CONVERTED HISTORY ===');
-                                        sendAnswerToAPI("Let's continue with the assessment");
-                                    }, 1000);
-                                    
-                                    return currentChatHistory;
-                                });
-                            }, 100);
-    
-                            // Speak the transition message
+                            // Speak transition message
                             setCurrentDisplayText(`${identifiedPart} identified. Let's continue with some questions.`);
                             await speakText(`${identifiedPart} identified. Let's continue with some questions.`, true, false);
                             
+                            // Convert chat history AFTER speaking
+                            setTimeout(() => {
+                                console.log('🔄 [CHAT] Converting chat history for QnA');
+                                const currentHistory = chatHistory;
+                                const convertedHistory = convertChatHistoryToQnAFormat([...currentHistory, bodyPartMessage]);
+                                setQnAHistory(convertedHistory);
+                                
+                                // Clear transition flag and initialize QnA
+                                setTimeout(() => {
+                                    console.log('🚀 [CHAT] Initializing QnA phase');
+                                    isTransitioningToQnARef.current = false;
+                                    
+                                    // Only make the initial call if not already done
+                                    if (!hasInitializedQnARef.current) {
+                                        hasInitializedQnARef.current = true;
+                                        sendAnswerToAPI("Let's continue with the assessment");
+                                    }
+                                }, 2000);
+                            }, 500);
+                            
                         } else {
-                            // Update chat history with response field only for text messages
+                            // Update chat history with response
                             setChatHistory(latestChats => {
                                 const updated = [...latestChats];
                                 if (updated.length > 0) {
@@ -439,7 +476,6 @@ export default function App() {
                                 setCurrentDisplayText(chatRes);
                                 await speakText(chatRes, true);
                             } else {
-                                // Moving to QnA phase
                                 setCurrentDisplayText("");
                                 await speakText(chatRes, true, false);
                                 setStep(11);
@@ -449,12 +485,15 @@ export default function App() {
                     }
                 })
                 .catch(async (error) => {
-                    console.error('Chat API error:', error);
+                    console.error('❌ [CHAT] Error:', error);
                     setStatus("Error communicating with AI");
                     
                     if (isVideo) {
-                        // Fallback for video - still proceed to next stage
-                        console.log('Video API failed, using fallback');
+                        // Fallback for video
+                        console.log('⚠️ [CHAT] Using video fallback');
+                        isTransitioningToQnARef.current = true;
+                        hasInitializedQnARef.current = false;
+                        
                         const identifiedPart = "lower back";
                         setIdentifiedBodyPart(identifiedPart);
                         
@@ -463,25 +502,23 @@ export default function App() {
                             response: `${identifiedPart} identified as body part (fallback)` 
                         };
                         
-                        setChatHistory(latestChats => {
-                            const updated = [...latestChats, bodyPartMessage];
+                        setChatHistory(latestChats => [...latestChats, bodyPartMessage]);
+                        
+                        setStep(11);
+                        setAnalyser(false);
+                        
+                        setTimeout(() => {
+                            const convertedHistory = convertChatHistoryToQnAFormat(chatHistory);
+                            setQnAHistory(convertedHistory);
                             
-                            // PROPERLY SET STEP TO 11
-                            setStep(11);
-                            setAnalyser(false);
-                            
-                            // Convert and initialize QnA with fallback
                             setTimeout(() => {
-                                const convertedHistory = convertChatHistoryToQnAFormat(updated);
-                                setQnAHistory(convertedHistory);
-                                
-                                setTimeout(() => {
+                                isTransitioningToQnARef.current = false;
+                                if (!hasInitializedQnARef.current) {
+                                    hasInitializedQnARef.current = true;
                                     sendAnswerToAPI("Let's continue with the assessment");
-                                }, 1000);
-                            }, 100);
-                            
-                            return updated;
-                        });
+                                }
+                            }, 2000);
+                        }, 500);
                         
                         setCurrentDisplayText(`${identifiedPart} identified. Let's continue with some questions.`);
                         await speakText(`${identifiedPart} identified. Let's continue with some questions.`, true, false);
@@ -494,13 +531,13 @@ export default function App() {
                     }
                 });
             
-            // Return updated chats only for text messages
             return isVideo ? prevChats : updatedChats;
         });
     }, [isStart, mainService, speakText, startListening, stopListening, step, sendAnswerToAPI, convertChatHistoryToQnAFormat, chatHistory]);
+
     // Start assessment
     const startAssessment = useCallback(() => {
-        console.log('=== STARTING ASSESSMENT ===');
+        console.log('🚀 [ASSESSMENT] Starting new assessment');
         const body = {
             userId: 1,
             anatomyId: 3,
@@ -509,12 +546,11 @@ export default function App() {
         
         mainService.createAssessment(body, '')
             .then(async (res) => {
-                console.log('=== ASSESSMENT CREATED ===');
-                console.log('Response:', JSON.stringify(res, null, 2));
+                console.log('✅ [ASSESSMENT] Created successfully');
+                console.log('✅ [ASSESSMENT] ID:', res.data?.assessmentId);
                 
                 if (res?.success) {
                     const newAssessmentId = res.data.assessmentId;
-                    console.log('New Assessment ID:', newAssessmentId);
                     setAssessmentId(newAssessmentId);
                     assessmentIdRef.current = newAssessmentId;
                     setIsStart(true);
@@ -522,24 +558,25 @@ export default function App() {
                 }
             })
             .catch(error => {
-                console.error('Error creating assessment:', error);
+                console.error('❌ [ASSESSMENT] Error:', error);
                 setStatus("Error starting assessment");
             });
     }, [mainService, sendChat]);
 
     // Update ref when assessmentId changes
     useEffect(() => {
-        console.log('=== ASSESSMENT ID CHANGED ===');
-        console.log('New assessmentId:', assessmentId);
+        console.log('🔄 [ASSESSMENT] ID updated:', assessmentId);
         assessmentIdRef.current = assessmentId;
     }, [assessmentId]);
 
     // Initialize on mount
     useEffect(() => {
+        console.log('🚀 [APP] Mounting component');
         isMountedRef.current = true;
         initMediaRecorder();
 
         return () => {
+            console.log('🛑 [APP] Unmounting component');
             isMountedRef.current = false;
             
             // Cleanup
@@ -555,34 +592,43 @@ export default function App() {
 
     // Handle pain point video from video capture
     const sendPainPointVideo = useCallback((base64Video) => {
-        console.log('=== RECEIVED VIDEO FROM AiVideo ===');
-        console.log('Video received, length:', base64Video ? base64Video.length : 0);
-        console.log('Assessment ID:', assessmentId);
-        console.log('Assessment ID Ref:', assessmentIdRef.current);
+        console.log('📹 [VIDEO] Received video from AiVideo');
+        console.log('📹 [VIDEO] Video size:', base64Video ? base64Video.length : 0);
+        console.log('📹 [VIDEO] Assessment ID:', assessmentId);
         
         if (base64Video && assessmentId) {
-            // Send as video, not as user message
             sendChat(base64Video, assessmentId, true);
         } else {
-            console.error('Missing video or assessment ID');
-            console.log('Video exists:', !!base64Video);
-            console.log('Assessment ID exists:', !!assessmentId);
+            console.error('❌ [VIDEO] Missing video or assessment ID');
         }
     }, [assessmentId, sendChat]);
 
     // Save ROM data
     const saveRomData = useCallback(async (romData) => {
+        console.log('💾 [ROM] Saving ROM data');
         try {
             const res = await mainService.saveRomData(romData, '', assessmentId);
-            console.log("ROM data saved:", res);
+            console.log('✅ [ROM] Data saved successfully');
         } catch (error) {
-            console.error('Error saving ROM data:', error);
+            console.error('❌ [ROM] Error saving data:', error);
             setStatus("Error saving ROM data");
         }
     }, [assessmentId, mainService]);
 
     // Reset assessment
     const reset = useCallback(() => {
+        console.log('🔄 [RESET] Resetting assessment');
+        
+        // Cancel any ongoing speech
+        window.speechSynthesis.cancel();
+        
+        // Reset all refs
+        isTransitioningToQnARef.current = false;
+        hasInitializedQnARef.current = false;
+        lastProcessedQuestionRef.current = null;
+        qnaApiCallInProgressRef.current = false;
+        
+        // Reset state
         setStep(0);
         setIsStart(false);
         setIsOpen(true);
@@ -613,6 +659,9 @@ export default function App() {
                 <div>Body Part: {identifiedBodyPart}</div>
                 <div>Chat History: {chatHistory.length}</div>
                 <div>QnA History: {QnAHistory.length}</div>
+                <div>Transitioning: {isTransitioningToQnARef.current ? 'Yes' : 'No'}</div>
+                <div>QnA Initialized: {hasInitializedQnARef.current ? 'Yes' : 'No'}</div>
+                <div>API Call in Progress: {qnaApiCallInProgressRef.current ? 'Yes' : 'No'}</div>
             </div>
             
             <AiVideo step={step} next={sendPainPointVideo} />
@@ -622,6 +671,9 @@ export default function App() {
                 send={sendAnswerToAPI}
                 onComplete={() => setStep(prev => prev + 1)}
                 nextQuestion={nextQuestion}
+                isListening={isListening}
+                onStartListening={startListening}
+                onStopListening={stopListening}
             />
             
             {step < 8 && (
