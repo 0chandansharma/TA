@@ -35,15 +35,13 @@ func CreateAssessment(c *gin.Context) {
 
 	assessment, err := services.CreateAssessment(request.UserID, request.AnatomyID, request.AssessmentType)
 	if err != nil {
-		log.Println("Error creating assessment:")		
-		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "",err)
+		log.Println("Error creating assessment:")
+		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "", err)
 		return
 	}
 
 	helpers.SendResponse(c.Writer, true, http.StatusCreated, assessment, nil)
 }
-
-
 
 // SendChatToAIHandler handles POST /assessments/:assessmentId/chat
 // @Summary Send chat history for AI response
@@ -60,50 +58,81 @@ func CreateAssessment(c *gin.Context) {
 func SendChatToAIHandler(c *gin.Context) {
 	assessmentID := c.Param("assessmentId")
 
-	// Validate input
-	var chatRequest services.ChatRequest
+	// Create a flexible request structure that can handle both chat_history and video
+	var chatRequest struct {
+		ChatHistory []services.ChatMessage `json:"chat_history"`
+		Video       string                 `json:"video,omitempty"` // Optional video field
+	}
+
 	if err := c.ShouldBindJSON(&chatRequest); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
 		return
 	}
 
-	// log.Printf("Chat Request: %v\n", chatRequest)
+	log.Printf("Chat Request: %+v\n", chatRequest)
+	log.Printf("Assessment ID: %s\n", assessmentID)
 
-	// log.Printf("Assessment ID: %s\n", assessmentID)
+	// Check if this is a video request
+	if chatRequest.Video != "" {
+		log.Println("Received video for body part identification")
+		// Handle video differently - don't add to chat history
+		// Create a special request for video processing
+		videoRequest := services.VideoRequest{
+			ChatHistory: chatRequest.ChatHistory,
+			Video:       chatRequest.Video,
+		}
 
-	assessmentIDUint,unitErr := helpers.StringToUInt32(assessmentID)
-	if unitErr != nil {
-		log.Println(`Error converting assessment ID to uint32 `, assessmentID)		
-		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "",unitErr)
+		assessmentIDUint, unitErr := helpers.StringToUInt32(assessmentID)
+		if unitErr != nil {
+			log.Println(`Error converting assessment ID to uint32 `, assessmentID)
+			helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "", unitErr)
+			return
+		}
+
+		_, err := services.GetAssessment(assessmentIDUint)
+		if err != nil {
+			log.Println(`Error fetching the assessment `, assessmentID)
+			helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "", err)
+			return
+		}
+
+		// Call the AI service with video
+		aiResponse, err := services.SendVideoToAI(assessmentIDUint, videoRequest)
+		if err != nil {
+			log.Println(`Error sending video to AI `, assessmentID)
+			helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "", err)
+			return
+		}
+
+		helpers.SendResponse(c.Writer, true, http.StatusOK, aiResponse.Data, nil)
 		return
 	}
-	
+
+	// Handle regular chat (text-based)
+	assessmentIDUint, unitErr := helpers.StringToUInt32(assessmentID)
+	if unitErr != nil {
+		log.Println(`Error converting assessment ID to uint32 `, assessmentID)
+		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "", unitErr)
+		return
+	}
+
 	_, err := services.GetAssessment(assessmentIDUint)
 	if err != nil {
-		log.Println(`Error fetching the assessment `, assessmentID)		
-		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "",err)
+		log.Println(`Error fetching the assessment `, assessmentID)
+		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "", err)
 		return
 	}
 
-	// log.Printf("Assessment Data: %v\n", assessmentData)
-	// log.Printf("Chat Request: %v\n", chatRequest.ChatHistory)
-	// Call the AI service
+	// Call the AI service for regular chat
 	aiResponse, err := services.SendChatToAI(assessmentIDUint, chatRequest.ChatHistory)
 	if err != nil {
 		log.Println(`Error sending chat to AI `, assessmentID)
-		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "",err)
+		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "", err)
 		return
 	}
-	// log.Printf("aiResponse response: %v\n", aiResponse)
+
 	helpers.SendResponse(c.Writer, true, http.StatusOK, aiResponse.Data, nil)
-
-	// // Return the AI's response
-	// c.JSON(http.StatusOK, gin.H{
-	// 	"assessment_id": assessmentID,
-	// 	"response":      aiResponse.Response,
-	// })
 }
-
 
 // GetAssessment handles GET /assessments/:assessmentId
 // @Summary Get assessment details
@@ -117,22 +146,21 @@ func SendChatToAIHandler(c *gin.Context) {
 func GetAssessment(c *gin.Context) {
 	assessmentID := c.Param("assessmentId")
 
-	assessmentIDUint,unitErr := helpers.StringToUInt32(assessmentID)
+	assessmentIDUint, unitErr := helpers.StringToUInt32(assessmentID)
 	if unitErr != nil {
-		log.Println(`Error converting assessment ID to uint32 `, assessmentID)		
-		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "",unitErr)
+		log.Println(`Error converting assessment ID to uint32 `, assessmentID)
+		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "", unitErr)
 		return
 	}
 
 	assessment, err := services.GetAssessment(assessmentIDUint)
 	if err != nil {
-		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "",err)
+		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "", err)
 		return
 	}
 
 	helpers.SendResponse(c.Writer, true, http.StatusOK, assessment, nil)
 }
-
 
 // UpdateAssessmentStatus handles PATCH /assessments/:id/status
 // @Summary Update assessment status
@@ -192,10 +220,10 @@ func SendQuestionsToAIHandler(c *gin.Context) {
 		return
 	}
 
-	assessmentIDUint,unitErr := helpers.StringToUInt32(assessmentID)
+	assessmentIDUint, unitErr := helpers.StringToUInt32(assessmentID)
 	if unitErr != nil {
-		log.Println(`Error converting assessment ID to uint32 `, assessmentID)		
-		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "",unitErr)
+		log.Println(`Error converting assessment ID to uint32 `, assessmentID)
+		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "", unitErr)
 		return
 	}
 
@@ -203,13 +231,12 @@ func SendQuestionsToAIHandler(c *gin.Context) {
 	aiResponse, err := services.SendQuestionsToAI(assessmentIDUint, questionRequest)
 	if err != nil {
 		log.Println(`Error sending questions to AI `, assessmentID)
-		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "",err)
+		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "", err)
 		return
 	}
 
 	helpers.SendResponse(c.Writer, true, http.StatusOK, aiResponse.Data, nil)
 }
-
 
 // GetQuestion
 // @Summary Get a question by its AssessmentID
@@ -224,16 +251,16 @@ func SendQuestionsToAIHandler(c *gin.Context) {
 func GetQuestionnaires(c *gin.Context) {
 	assessmentID := c.Param("assessmentId")
 
-	assessmentIDUint,unitErr := helpers.StringToUInt32(assessmentID)
+	assessmentIDUint, unitErr := helpers.StringToUInt32(assessmentID)
 	if unitErr != nil {
-		log.Println(`Error converting assessment ID to uint32 `, assessmentID)		
-		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "",unitErr)
+		log.Println(`Error converting assessment ID to uint32 `, assessmentID)
+		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "", unitErr)
 		return
 	}
 
 	assessment, err := services.GetQuestionByAssessmentID(assessmentIDUint)
 	if err != nil {
-		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "",err)
+		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "", err)
 		return
 	}
 
@@ -242,7 +269,7 @@ func GetQuestionnaires(c *gin.Context) {
 
 // SubmitROMAnalysis handles POST /assessments/:assessmentId/romAnalysis
 // @Summary Submit ROM analysis data
-// @Description Submits pose model data and analysis results for an assessment	
+// @Description Submits pose model data and analysis results for an assessment
 // @Tags ROM
 // @Accept json
 // @Produce json
@@ -261,23 +288,23 @@ func SubmitROMAnalysis(c *gin.Context) {
 		return
 	}
 
-	assessmentIDUint,unitErr := helpers.StringToUInt32(assessmentID)
+	assessmentIDUint, unitErr := helpers.StringToUInt32(assessmentID)
 	if unitErr != nil {
-		log.Println(`Error converting assessment ID to uint32 `, assessmentID)		
-		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "",unitErr)
+		log.Println(`Error converting assessment ID to uint32 `, assessmentID)
+		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "", unitErr)
 		return
 	}
 
 	//check if assessment exists
 	_, assessmentErr := services.GetAssessment(assessmentIDUint)
 	if assessmentErr != nil {
-		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "",assessmentErr)
+		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "", assessmentErr)
 		return
 	}
 
 	_, err := services.SubmitROMAnalysis(assessmentIDUint, request.RangeOfMotion)
 	if err != nil {
-		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "",err)
+		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "", err)
 		return
 	}
 
@@ -296,30 +323,30 @@ func SubmitROMAnalysis(c *gin.Context) {
 func GetROMAnalysisByAssessmentId(c *gin.Context) {
 	assessmentID := c.Param("assessmentId")
 
-	assessmentIDUint,unitErr := helpers.StringToUInt32(assessmentID)
+	assessmentIDUint, unitErr := helpers.StringToUInt32(assessmentID)
 	if unitErr != nil {
-		log.Println(`Error converting assessment ID to uint32 `, assessmentID)		
-		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "",unitErr)
+		log.Println(`Error converting assessment ID to uint32 `, assessmentID)
+		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "", unitErr)
 		return
 	}
 
 	//check if assessment exists
 	_, assessmentErr := services.GetAssessment(assessmentIDUint)
 	if assessmentErr != nil {
-		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "",assessmentErr)
+		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "", assessmentErr)
 		return
 	}
 
 	romData, err := services.GetROMAnalysisByAssessmentId(assessmentIDUint)
 	if err != nil {
-		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "",err)
+		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "", err)
 		return
 	}
 
 	helpers.SendResponse(c.Writer, true, http.StatusOK, romData, nil)
 }
 
-//GetDashboardData handles GET /assessments/:assessmentId/dashboard
+// GetDashboardData handles GET /assessments/:assessmentId/dashboard
 // @Summary Get dashboard data
 // @Description Retrieves dashboard data for an assessment
 // @Tags Dashboard
@@ -331,23 +358,23 @@ func GetROMAnalysisByAssessmentId(c *gin.Context) {
 func GetDashboardData(c *gin.Context) {
 	assessmentID := c.Param("assessmentId")
 
-	assessmentIDUint,unitErr := helpers.StringToUInt32(assessmentID)
+	assessmentIDUint, unitErr := helpers.StringToUInt32(assessmentID)
 	if unitErr != nil {
-		log.Println(`Error converting assessment ID to uint32 `, assessmentID)		
-		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "",unitErr)
+		log.Println(`Error converting assessment ID to uint32 `, assessmentID)
+		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "", unitErr)
 		return
 	}
 
 	//check if assessment exists
 	_, assessmentErr := services.GetAssessment(assessmentIDUint)
 	if assessmentErr != nil {
-		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "",assessmentErr)
+		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "", assessmentErr)
 		return
 	}
 
 	dashboardData, err := services.FetchAssessmentData(assessmentIDUint)
 	if err != nil {
-		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "",err)
+		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "", err)
 		return
 	}
 
@@ -372,12 +399,10 @@ func GetDashboardData(c *gin.Context) {
 		return
 	}
 
-
 	helpers.SendResponse(c.Writer, true, http.StatusOK, aiResult, nil)
 }
 
-
-//GetDashboardDataByAssessmentId handles GET /assessments/:assessmentId/dashboardByAssessmentId
+// GetDashboardDataByAssessmentId handles GET /assessments/:assessmentId/dashboardByAssessmentId
 // @Summary Get dashboard data
 // @Description Retrieves dashboard data for an assessment
 // @Tags Dashboard
@@ -389,25 +414,24 @@ func GetDashboardData(c *gin.Context) {
 func GetDashboardDataByAssessmentId(c *gin.Context) {
 	assessmentID := c.Param("assessmentId")
 
-	assessmentIDUint,unitErr := helpers.StringToUInt32(assessmentID)
+	assessmentIDUint, unitErr := helpers.StringToUInt32(assessmentID)
 	if unitErr != nil {
-		log.Println(`Error converting assessment ID to uint32 `, assessmentID)		
-		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "",unitErr)
+		log.Println(`Error converting assessment ID to uint32 `, assessmentID)
+		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "", unitErr)
 		return
 	}
 
 	//check if assessment exists
 	_, assessmentErr := services.GetAssessment(assessmentIDUint)
 	if assessmentErr != nil {
-		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "",assessmentErr)
+		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "", assessmentErr)
 		return
 	}
 
 	analysisData, err := services.FetchAnalysisDataByAssessmentId(assessmentIDUint)
 	if err != nil {
-		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "",err)
+		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "", err)
 		return
 	}
 	helpers.SendResponse(c.Writer, true, http.StatusOK, analysisData, nil)
 }
-

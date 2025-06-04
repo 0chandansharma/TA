@@ -42,10 +42,15 @@ type ChatRequest struct {
 	ChatHistory []ChatMessage `json:"chat_history"`
 }
 
+// NEW: Video request structure for body part identification
+type VideoRequest struct {
+	ChatHistory []ChatMessage `json:"chat_history"`
+	Video       string        `json:"video"` // Base64 encoded video
+}
+
 type ChatResponse struct {
 	Response string `json:"response"`
 }
-
 
 // GetAssessmentByID retrieves an assessment by ID (stub implementation)
 func GetAssessmentByID(assessmentID uint32) (*Assessment, error) {
@@ -61,10 +66,9 @@ func GetAssessmentByID(assessmentID uint32) (*Assessment, error) {
 		CompletionPercentage: 50,
 		ChatHistory:          []ChatMessage{},
 	}
-	
+
 	return assessment, nil
 }
-
 
 type QuestionRequest struct {
 	QuestionHistory []QuestionMessage `json:"chat_history"`
@@ -125,7 +129,6 @@ type AIResult struct {
 
 // CreateAssessment creates a new assessment
 func CreateAssessment(userID uint32, anatomyID uint32, assessmentType string) (*Assessment, error) {
-
 	var exists bool
 	err := db.DB.QueryRow(context.Background(), "SELECT EXISTS (SELECT 1 FROM users WHERE user_id = $1)", userID).Scan(&exists)
 	if err != nil {
@@ -135,7 +138,7 @@ func CreateAssessment(userID uint32, anatomyID uint32, assessmentType string) (*
 	if !exists {
 		return nil, errors.New("User not found")
 	}
-	// log.Printf("userID: %v, anatomyID: %v, assessmentType: %v", userID, anatomyID, assessmentType)
+
 	query := `
 		INSERT INTO assessments ( user_id, anatomy_id, assessment_type, start_time, status, completion_percentage)
 		VALUES ($1, $2, $3, NOW(), $4, $5) RETURNING assessment_id, start_time
@@ -162,7 +165,6 @@ func CreateAssessment(userID uint32, anatomyID uint32, assessmentType string) (*
 
 // GetAssessment retrieves an assessment by its ID
 func GetAssessment(assessmentID uint32) (*Assessment, error) {
-
 	query := `
 		SELECT assessment_id, user_id, anatomy_id, assessment_type, start_time, end_time, status, completion_percentage, chat_history
 		FROM assessments
@@ -254,7 +256,7 @@ func SendChatToAI(assessmentIDUint uint32, chatMessage []ChatMessage) (APIRespon
 	if err != nil {
 		return aiResponse, err
 	}
-	// log.Printf("Request: %v\n", bytes.NewBuffer(jsonData))
+
 	// Send the request to the AI model
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
@@ -262,7 +264,7 @@ func SendChatToAI(assessmentIDUint uint32, chatMessage []ChatMessage) (APIRespon
 	}
 	defer resp.Body.Close()
 
-	log.Printf("Response: %v\n", resp)
+	log.Printf("Response Status: %v\n", resp.StatusCode)
 
 	if resp.StatusCode != http.StatusOK {
 		return aiResponse, errors.New("failed to get a response from AI model")
@@ -286,8 +288,54 @@ func SendChatToAI(assessmentIDUint uint32, chatMessage []ChatMessage) (APIRespon
 				return aiResponse, err
 			}
 		}
-
 	}
+
+	return aiResponse, nil
+}
+
+// NEW: SendVideoToAI sends video with chat history to AI for body part identification
+func SendVideoToAI(assessmentIDUint uint32, videoRequest VideoRequest) (APIResponse, error) {
+	var aiResponse APIResponse
+
+	url := "https://deecogs-bpi-bot-844145949029.europe-west1.run.app/chat"
+
+	// Prepare the request payload with video
+	payload := struct {
+		ChatHistory []ChatMessage `json:"chat_history"`
+		Video       string        `json:"video"`
+	}{
+		ChatHistory: videoRequest.ChatHistory,
+		Video:       videoRequest.Video,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return aiResponse, err
+	}
+
+	log.Printf("Sending video for body part identification, payload size: %d bytes", len(jsonData))
+
+	// Send the request to the AI model
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return aiResponse, err
+	}
+	defer resp.Body.Close()
+
+	log.Printf("Video Response Status: %v\n", resp.StatusCode)
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		log.Printf("Error response body: %s", string(bodyBytes))
+		return aiResponse, errors.New("failed to get a response from AI model for video")
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&aiResponse); err != nil {
+		return aiResponse, err
+	}
+
+	// Don't save video to chat history, just process the response
+	log.Println("Video processed successfully for body part identification")
 
 	return aiResponse, nil
 }
@@ -304,7 +352,7 @@ func SendQuestionsToAI(assessmentIDUint uint32, questionRequest QuestionRequest)
 	if err != nil {
 		return aiResponse, err
 	}
-	// log.Printf("Request: %v\n", bytes.NewBuffer(jsonData))
+
 	// Send the request to the AI model
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
@@ -335,7 +383,6 @@ func SendQuestionsToAI(assessmentIDUint uint32, questionRequest QuestionRequest)
 				return aiResponse, err
 			}
 		}
-
 	}
 
 	return aiResponse, nil
@@ -453,11 +500,6 @@ func FetchAssessmentData(assessmentID uint32) (*DashboardDataAIRequest, error) {
 		RangeOfMotion: rangeOfMotion,
 	}
 
-	// aiRequest:= &AIRequest {
-	// 	Content: *response,
-	// }
-	// log.Printf("AI Request: %v\n", aiRequest)
-
 	return response, nil
 }
 
@@ -500,7 +542,6 @@ func RequestAIAnalysisFromAI(assessmentID uint32, dashboardData *DashboardDataAI
 	}
 
 	return &aiResponse.Data, nil
-
 }
 
 // SaveAIAnalysis saves the AI analysis results in the database
