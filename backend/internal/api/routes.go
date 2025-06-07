@@ -3,12 +3,29 @@ package api
 
 import (
 	"ai-bot-deecogs/internal/api/handlers"
+	"bytes"
+	"io"
 
 	"github.com/gin-gonic/gin"
 )
 
+// StoreRequestBody middleware to allow re-reading request body
+func StoreRequestBody() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Body != nil && c.Request.Method == "POST" {
+			bodyBytes, _ := io.ReadAll(c.Request.Body)
+			c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			c.Set("body_bytes", bodyBytes)
+		}
+		c.Next()
+	}
+}
+
 // SetupRoutes initializes API routes
 func SetupRoutes(router *gin.Engine) {
+	// Add the middleware for questionnaire endpoint
+	router.Use(StoreRequestBody())
+
 	// User routes
 	router.POST("/users", handlers.CreateUser)
 	router.GET("/users/:id", handlers.GetUser)

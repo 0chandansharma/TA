@@ -165,28 +165,19 @@ const AiOrbGeometry = ({ shouldReduceQuality, isMobile, analyser, isListening, i
             targetColor = mix(uColorIdle, uColorListening, uColorMix * 2.0);
         }
         
-        // Enhanced glow effect with listening boost
-        float glow = sin(uTime * 2.0) * 0.2 + 0.8;
-        if (uColorMix > 0.0 && uColorMix < 0.6) { // Listening state
-            glow += sin(uTime * 6.0) * 0.4; // Faster pulsing when listening
-        }
-        vec3 color = vPattern * targetColor * (1.0 + uGlowIntensity * glow);
+        // Minimal glow effect
+        float glow = 0.9 + sin(uTime * 1.0) * 0.1; // Much smaller glow variation
+        vec3 color = vPattern * targetColor * glow;
         
-        // Enhanced audio reactive brightness
-        color += vAudioIntensity * 0.5;
+        // Reduced audio reactivity
+        color += vAudioIntensity * 0.1; // Reduced from 0.5
         
-        // Extra shimmer effect when listening
-        if (uColorMix > 0.0 && uColorMix < 0.6) {
-            float shimmer = sin(uTime * 8.0 + vPattern * 10.0) * 0.3;
-            color += shimmer * targetColor * 0.4;
-        }
-
-        csm_DiffuseColor = vec4(color, 1.);
+        csm_DiffuseColor = vec4(color, 0.9);
         
-        // Add emissive for glow effect
-        csm_Emissive = color * uGlowIntensity * 0.5;
+        // Minimal emissive
+        csm_Emissive = color * uGlowIntensity * 0.1; // Reduced from 0.5
     }
-    `;
+`;
 
     // Smooth transitions for state changes with enhanced listening feedback
     useEffect(() => {
@@ -223,17 +214,16 @@ const AiOrbGeometry = ({ shouldReduceQuality, isMobile, analyser, isListening, i
         // Enhanced rotation and movement
         if (meshRef.current) {
             // Faster rotation when listening
-            const rotationSpeed = isListening ? 0.3 : (isAiSpeaking ? 0.2 : 0.1);
+            const rotationSpeed = isListening ? 0.1 : (isAiSpeaking ? 0.08 : 0.05);
             meshRef.current.rotation.y = elapsedTime * rotationSpeed;
             
             // More pronounced bobbing when listening
             if (isListening) {
-                meshRef.current.position.y = Math.sin(elapsedTime * 3) * 0.08;
-                // Add subtle rotation wobble for listening feedback
-                meshRef.current.rotation.x = Math.sin(elapsedTime * 4) * 0.05;
-                meshRef.current.rotation.z = Math.cos(elapsedTime * 3.5) * 0.03;
+                meshRef.current.position.y = Math.sin(elapsedTime * 1.5) * 0.02; // Much smaller movement
+                meshRef.current.rotation.x = Math.sin(elapsedTime * 2) * 0.01;
+                meshRef.current.rotation.z = Math.cos(elapsedTime * 1.8) * 0.01;
             } else if (isAiSpeaking) {
-                meshRef.current.position.y = Math.sin(elapsedTime * 2) * 0.05;
+                meshRef.current.position.y = Math.sin(elapsedTime * 1) * 0.01;
                 meshRef.current.rotation.x = 0;
                 meshRef.current.rotation.z = 0;
             } else {
@@ -311,16 +301,16 @@ const AiOrbGeometry = ({ shouldReduceQuality, isMobile, analyser, isListening, i
 
     const uniforms = {
         uTime: { value: 0 },
-        uColorIdle: { value: new Color('#ffeffe') },
-        uColorListening: { value: new Color('#ff69b4') }, // Hot pink for listening - more vibrant
-        uColorSpeaking: { value: new Color('#00bfff') }, // Deeper sky blue for AI speaking
+        uColorIdle: { value: new Color('#C5EFE0') }, // Your primeLight color
+        uColorListening: { value: new Color('#6AFBC6') }, // Your primeDark color
+        uColorSpeaking: { value: new Color('#C5EFE0') }, // Your primeLight color
         uColorMix: { value: 0 },
-        uGlowIntensity: { value: 0.3 },
-        uGradientStrength: { value: 3 },
-        uSpeed: { value: 1.10 },
-        uNoiseStrength: { value: 0.90 },
-        uDisplacementStrength: { value: 0.48 },
-        uFractAmount: { value: 4 },
+        uGlowIntensity: { value: 0.2 }, // Reduced from 0.3
+        uGradientStrength: { value: 2 }, // Reduced from 3
+        uSpeed: { value: 0.5 }, // Reduced from 1.10
+        uNoiseStrength: { value: 0.3 }, // Reduced from 0.90
+        uDisplacementStrength: { value: 0.2 }, // Reduced from 0.48
+        uFractAmount: { value: 2 }, // Reduced from 4
         uAudioReactivity: { value: 0 },
         uPulseIntensity: { value: 0 },
     };
@@ -332,7 +322,7 @@ const AiOrbGeometry = ({ shouldReduceQuality, isMobile, analyser, isListening, i
                 geometry={geometry} 
                 frustumCulled={false} 
                 position={[0, isMobile ? -1.3 * 0 : 0, 0]}
-                scale={isListening ? 1.15 : (isAiSpeaking ? 1.1 : 1)} // Slightly larger when listening
+                scale={isListening ? 1.05 : (isAiSpeaking ? 1.02 : 1)} // Slightly larger when listening
             >
                 <CustomShaderMaterial 
                     ref={materialRef} 
@@ -363,12 +353,12 @@ const AiOrbGeometry = ({ shouldReduceQuality, isMobile, analyser, isListening, i
             
             {/* Enhanced dynamic lighting */}
             <ambientLight 
-                color={isAiSpeaking ? "#00bfff" : (isListening ? "#ff69b4" : "#0079ff")} 
-                intensity={isListening ? 6 : (isAiSpeaking ? 5 : 4)} 
+                color={isAiSpeaking ? "#D3FDEE" : (isListening ? "#6AFBC6" : "#C5EFE0")} 
+                intensity={2} // Reduced from 4-6
             />
             <directionalLight 
-                color={isAiSpeaking ? "#87ceeb" : (isListening ? "#ff1493" : "#c4fff8")} 
-                intensity={isListening ? 7 : (isAiSpeaking ? 6 : 5)} 
+                color="#D3FDEE" 
+                intensity={3} // Reduced from 5-7
                 position={[-0.33, 2, 3.50]} 
             />
             

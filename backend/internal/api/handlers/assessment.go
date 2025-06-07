@@ -4,6 +4,9 @@ import (
 	"ai-bot-deecogs/internal/helpers"
 	"ai-bot-deecogs/internal/models"
 	"ai-bot-deecogs/internal/services"
+	"bytes"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 
@@ -210,32 +213,137 @@ func UpdateAssessmentStatus(c *gin.Context) {
 // @Failure 400 {object} map[string]string
 // @Failure 500 {object} map[string]string
 // @Router /assessments/{assessmentId}/questionnaires [post]
+
+// backend/internal/api/handlers/assessment.go
+// Fixed SendQuestionsToAIHandler that works with existing code
+
+// Replace the existing SendQuestionsToAIHandler in assessment.go with this version
+
+// SendQuestionsToAIHandler handles POST /assessments/:assessmentId/questionnaires
+// @Summary Send questions to AI
+// @Description Sends questions to an AI model for assessment
+// @Tags Assessments
+// @Accept json
+// @Produce json
+// @Param id path string true "Assessment ID"
+// @Param questions body services.QuestionRequest true "Questions"
+// @Success 200 {object} services.QuestionResponse
+// @Failure 400 {object} map[string]string
+// @Failure 500 {object} map[string]string
+// @Router /assessments/{assessmentId}/questionnaires [post]
 func SendQuestionsToAIHandler(c *gin.Context) {
 	assessmentID := c.Param("assessmentId")
 
-	// Validate input
+	// First, try to bind as QuestionRequest
 	var questionRequest services.QuestionRequest
 	if err := c.ShouldBindJSON(&questionRequest); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+		// If that fails, try the chat_history format
+		c.Request.Body = io.NopCloser(bytes.NewReader([]byte(c.Keys["body_bytes"].([]byte))))
+
+		var chatRequest struct {
+			ChatHistory []services.QuestionMessage `json:"chat_history"`
+		}
+
+		if err2 := c.ShouldBindJSON(&chatRequest); err2 != nil {
+			log.Printf("Error parsing request body: %v", err2)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+			return
+		}
+
+		questionRequest.QuestionHistory = chatRequest.ChatHistory
+	}
+
+	// Remove duplicate body part messages
+	cleanedHistory := []services.QuestionMessage{}
+	lastWasBodyPart := false
+
+	for _, msg := range questionRequest.QuestionHistory {
+		isBodyPart := msg.User == "User has shown body part on video"
+
+		// Skip if this is a duplicate body part message
+		if isBodyPart && lastWasBodyPart {
+			log.Printf("Removing duplicate body part message")
+			continue
+		}
+
+		cleanedHistory = append(cleanedHistory, msg)
+		lastWasBodyPart = isBodyPart
+	}
+
+	questionRequest.QuestionHistory = cleanedHistory
+
+	// Convert assessment ID
+	assessmentIDUint, err := helpers.StringToUInt32(assessmentID)
+	if err != nil {
+		log.Printf("Error converting assessment ID: %s", assessmentID)
+		helpers.SendResponse(c.Writer, false, http.StatusBadRequest, "", err)
 		return
 	}
 
-	assessmentIDUint, unitErr := helpers.StringToUInt32(assessmentID)
-	if unitErr != nil {
-		log.Println(`Error converting assessment ID to uint32 `, assessmentID)
-		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "", unitErr)
+	// Verify assessment exists and is active
+	assessment, err := services.GetAssessment(assessmentIDUint)
+	if err != nil {
+		log.Printf("Assessment not found: %d", assessmentIDUint)
+		helpers.SendResponse(c.Writer, false, http.StatusNotFound, "", err)
 		return
 	}
+
+	// Check if assessment is already completed
+	if assessment.Status == "completed" || assessment.Status == "abandoned" {
+		log.Printf("Assessment %d is already %s", assessmentIDUint, assessment.Status)
+		helpers.SendResponse(c.Writer, false, http.StatusBadRequest,
+			fmt.Sprintf("Assessment is already %s", assessment.Status), nil)
+		return
+	}
+
+	log.Printf("Processing questionnaire for assessment %d with %d messages",
+		assessmentIDUint, len(questionRequest.QuestionHistory))
 
 	// Call the AI service
 	aiResponse, err := services.SendQuestionsToAI(assessmentIDUint, questionRequest)
 	if err != nil {
-		log.Println(`Error sending questions to AI `, assessmentID)
-		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, "", err)
+		log.Printf("Error sending questions to AI: %v", err)
+
+		// Return user-friendly error message
+		errorMessage := "Error processing your question. Please try again."
+		if err.Error() == "failed to get a response from AI model" {
+			errorMessage = "AI service is temporarily unavailable. Please try again in a moment."
+		}
+
+		helpers.SendResponse(c.Writer, false, http.StatusInternalServerError, errorMessage, err)
 		return
 	}
 
+	// Update assessment status if needed
+	if aiResponse.Data != nil {
+		if dataMap, ok := aiResponse.Data.(map[string]interface{}); ok {
+			if action, exists := dataMap["action"]; exists {
+				log.Printf("AI action: %v", action)
+
+				// Update status to in_progress if it's still in started state
+				if assessment.Status == "started" {
+					updateErr := services.UpdateAssessmentStatus(assessmentID, models.StatusInProgress)
+					if updateErr != nil {
+						log.Printf("Warning: Failed to update assessment status: %v", updateErr)
+					}
+				}
+			}
+		}
+	}
+
 	helpers.SendResponse(c.Writer, true, http.StatusOK, aiResponse.Data, nil)
+}
+
+// Add this middleware to store request body for re-reading
+func StoreRequestBody() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Body != nil {
+			bodyBytes, _ := io.ReadAll(c.Request.Body)
+			c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			c.Set("body_bytes", bodyBytes)
+		}
+		c.Next()
+	}
 }
 
 // GetQuestion

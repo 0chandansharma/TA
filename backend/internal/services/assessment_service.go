@@ -341,46 +341,99 @@ func SendVideoToAI(assessmentIDUint uint32, videoRequest VideoRequest) (APIRespo
 }
 
 // SendQuestionsToAI sends chat history to the AI model and retrieves a response
+// Updated SendQuestionsToAI function with better error handling
 func SendQuestionsToAI(assessmentIDUint uint32, questionRequest QuestionRequest) (APIResponse, error) {
 	var aiResponse APIResponse
 
 	url := "https://deecogs-xai-bot-844145949029.europe-west1.run.app/chat"
 
-	// Prepare the request payload (now includes video if present)
+	// Validate question history
+	if len(questionRequest.QuestionHistory) == 0 {
+		log.Println("Warning: Empty question history")
+	}
+
+	// Log request details
+	log.Printf("Sending QnA request to AI - Assessment: %d, Messages: %d", assessmentIDUint, len(questionRequest.QuestionHistory))
+
+	// Prepare the request payload
 	payload := questionRequest
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
+		log.Printf("Error marshaling request: %v", err)
 		return aiResponse, err
 	}
 
-	// Send the request to the AI model
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	// Log payload size
+	log.Printf("Request payload size: %d bytes", len(jsonData))
+
+	// Create request with timeout
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
+		log.Printf("Error creating request: %v", err)
+		return aiResponse, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	// Send the request to the AI model
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Error sending request to AI: %v", err)
 		return aiResponse, err
 	}
 	defer resp.Body.Close()
 
-	log.Printf("Response: %v\n", resp)
-
-	if resp.StatusCode != http.StatusOK {
-		return aiResponse, errors.New("failed to get a response from AI model")
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&aiResponse); err != nil {
+	// Read response body
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Error reading response body: %v", err)
 		return aiResponse, err
 	}
 
-	if aiResponse.Data != nil {
-		action := aiResponse.Data.(map[string]interface{})["action"]
-		if action == "next_api" || action == "rom_api" {
-			log.Println("Next API call")
-			//stringify the ChatRequest and save it in the database
-			query := `INSERT INTO questionnaires (assessment_id, chat_history) VALUES ($1, $2) RETURNING question_id`
-			var questionID string
+	log.Printf("AI Response Status: %v, Body Size: %d bytes", resp.StatusCode, len(bodyBytes))
 
-			err = db.DB.QueryRow(context.Background(), query, assessmentIDUint, jsonData).Scan(&questionID)
-			if err != nil {
-				return aiResponse, err
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("AI returned non-200 status. Response: %s", string(bodyBytes))
+		return aiResponse, errors.New("failed to get a response from AI model")
+	}
+
+	// Parse response
+	if err := json.Unmarshal(bodyBytes, &aiResponse); err != nil {
+		log.Printf("Error parsing AI response: %v", err)
+		log.Printf("Raw response: %s", string(bodyBytes))
+		return aiResponse, err
+	}
+
+	// Check if response has data
+	if aiResponse.Data == nil {
+		log.Println("Warning: AI response has no data")
+		return aiResponse, errors.New("AI response contains no data")
+	}
+
+	// Extract action from response for logging
+	if dataMap, ok := aiResponse.Data.(map[string]interface{}); ok {
+		if action, exists := dataMap["action"]; exists {
+			log.Printf("AI Response Action: %v", action)
+
+			// Save to database if moving to next phase
+			if action == "next_api" || action == "rom_api" {
+				log.Printf("Saving questionnaire data for assessment %d", assessmentIDUint)
+
+				// Save the chat history to questionnaires table
+				query := `INSERT INTO questionnaires (assessment_id, chat_history) VALUES ($1, $2) RETURNING question_id`
+				var questionID string
+
+				err = db.DB.QueryRow(context.Background(), query, assessmentIDUint, jsonData).Scan(&questionID)
+				if err != nil {
+					log.Printf("Error saving questionnaire: %v", err)
+					// Don't fail the request, just log the error
+				} else {
+					log.Printf("Questionnaire saved with ID: %s", questionID)
+				}
 			}
 		}
 	}

@@ -1,4 +1,4 @@
-// app-google-speech.js - Fixed version with detailed logging
+// app-google-speech.js - Complete fixed version with proper function ordering
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import './assets/styles/app.css';
 import AiAvatar from './core/components/AiAvatar';
@@ -31,12 +31,14 @@ export default function App() {
     const hasInitializedQnARef = useRef(false);
     const lastProcessedQuestionRef = useRef(null);
     const qnaApiCallInProgressRef = useRef(false);
+    const [isQnAComplete, setIsQnAComplete] = useState(false);
 
     const mediaRecorderRef = useRef(null);
     const audioChunksRef = useRef([]);
     const streamRef = useRef(null);
     const isMountedRef = useRef(true);
     const audioContextRef = useRef(null);
+    const pendingAudioBlobRef = useRef(null);
 
     const mainService = new ServiceChat();
     const googleSpeechService = new ServiceGoogleSpeech();
@@ -55,7 +57,100 @@ export default function App() {
         return converted;
     }, []);
 
-    // Send answer to QnA API (for questionnaire phase) - FIXED with duplicate prevention
+    // Start listening
+    const startListening = useCallback(() => {
+        console.log('🎤 [LISTEN] Starting to listen');
+        if (!mediaRecorderRef.current) {
+            console.log('🎤 [LISTEN] No media recorder, will initialize first');
+            return;
+        }
+
+        if (mediaRecorderRef.current.state === 'inactive') {
+            setIsListening(true);
+            setStatus("Listening...");
+            audioChunksRef.current = [];
+            
+            mediaRecorderRef.current.start();
+            console.log('✅ [LISTEN] Recording started');
+            
+            // Auto-stop after 5 seconds
+            setTimeout(() => {
+                if (mediaRecorderRef.current?.state === 'recording') {
+                    console.log('⏱️ [LISTEN] Auto-stopping after 5 seconds');
+                    stopListening();
+                }
+            }, 5000);
+        }
+    }, []);
+
+    // Stop listening
+    const stopListening = useCallback(() => {
+        console.log('🛑 [LISTEN] Stopping listening');
+        if (mediaRecorderRef.current?.state === 'recording') {
+            mediaRecorderRef.current.stop();
+            setIsListening(false);
+            console.log('✅ [LISTEN] Recording stopped');
+        }
+    }, []);
+
+    // Text to speech handler
+    const speakText = useCallback(async (text, isAiSpeaking = false, listenNext = true, stepNumber = 0) => {
+        console.log('🔊 [TTS] Speaking:', text.substring(0, 50) + '...');
+        try {
+            setAiSpeaking(true);
+            if (isAiSpeaking) {
+                setStatus("AI is speaking...");
+            }
+    
+            const audioBlob = await googleSpeechService.textToSpeech(text);
+            await googleSpeechService.playAudio(audioBlob);
+    
+            setAiSpeaking(false);
+            setStatus("");
+            
+            console.log('🔊 [TTS] Speech completed, listenNext:', listenNext, 'step:', step);
+    
+            // Only auto-start listening for chat phase (step < 11), not QnA phase
+            if (listenNext && isMountedRef.current && step < 11) {
+                console.log('🎤 [TTS] Auto-starting listening after speech');
+                startListening();
+            }
+    
+            // Handle video step timing
+            if (stepNumber === 8) {
+                console.log('📹 [TTS] Starting video countdown');
+                setTimeout(() => {
+                    setCurrentDisplayText("");
+                    setStep(stepNumber);
+                }, 5000);
+    
+                for (let i = 5; i > 0; i--) {
+                    setTimeout(() => {
+                        setCurrentDisplayText(`Please be ready in ${i} seconds`);
+                    }, (5 - i) * 1000);
+                }
+                setTimeout(() => setCurrentDisplayText(""), 5000);
+            }
+        } catch (error) {
+            console.error('❌ [TTS] Error:', error);
+            setAiSpeaking(false);
+            setStatus("");
+            
+            // Fallback to browser TTS
+            if ("speechSynthesis" in window) {
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.rate = 0.8;
+                utterance.onend = () => {
+                    if (listenNext && isMountedRef.current && step < 11) {
+                        startListening();
+                    }
+                };
+                window.speechSynthesis.speak(utterance);
+            }
+        }
+    }, [googleSpeechService, step, startListening]);
+
+    // Send answer to QnA API (for questionnaire phase)
     const sendAnswerToAPI = useCallback(async (answer) => {
         console.log('📤 [QNA-API] sendAnswerToAPI called');
         console.log('📤 [QNA-API] Answer:', answer);
@@ -157,10 +252,16 @@ export default function App() {
                 // Check for phase transitions
                 if (questionRes.action === "rom_api") {
                     console.log('🎯 [QNA-API] Moving to ROM phase');
+                    setIsQnAComplete(true);
                     setStep(20);
                 } else if (questionRes.action === "dashboard_api") {
                     console.log('🎯 [QNA-API] Moving to Dashboard phase');
+                    setIsQnAComplete(true);
                     setStep(24);
+                }
+                else if (questionRes.action === "complete" || questionRes.action === "end_questionnaire") {
+                    console.log('🎯 [QNA-API] QnA complete, enabling free conversation');
+                    setIsQnAComplete(true);
                 }
             }
         } catch (error) {
@@ -171,195 +272,9 @@ export default function App() {
             qnaApiCallInProgressRef.current = false;
             console.log('🔓 [QNA-API] API call completed, flag reset');
         }
-    }, [QnAHistory, mainService]);
+    }, [QnAHistory, mainService, speakText]);
 
-    // Initialize media recorder
-    const initMediaRecorder = useCallback(async () => {
-        console.log('🎤 [MEDIA] Initializing media recorder');
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ 
-                audio: {
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    sampleRate: 48000
-                } 
-            });
-            
-            streamRef.current = stream;
-            
-            const recorder = new MediaRecorder(stream, { 
-                mimeType: 'audio/webm;codecs=opus',
-                audioBitsPerSecond: 128000
-            });
-
-            recorder.ondataavailable = (event) => {
-                if (event.data.size > 0) {
-                    audioChunksRef.current.push(event.data);
-                }
-            };
-
-            recorder.onstop = async () => {
-                console.log('🎤 [MEDIA] Recording stopped, chunks:', audioChunksRef.current.length);
-                const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-                audioChunksRef.current = [];
-                
-                if (audioBlob.size > 0) {
-                    await handleSpeechToText(audioBlob);
-                }
-            };
-
-            mediaRecorderRef.current = recorder;
-            
-            // Initialize audio analyser
-            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            audioContextRef.current = audioContext;
-            const source = audioContext.createMediaStreamSource(stream);
-            const analyserNode = audioContext.createAnalyser();
-            analyserNode.fftSize = 256;
-            source.connect(analyserNode);
-            setAnalyser(analyserNode);
-            
-            console.log('✅ [MEDIA] Media recorder initialized');
-        } catch (error) {
-            console.error('❌ [MEDIA] Error initializing:', error);
-            setStatus("Microphone access denied");
-        }
-    }, []);
-
-    // Text to speech handler
-    const speakText = useCallback(async (text, isAiSpeaking = false, listenNext = true, stepNumber = 0) => {
-        console.log('🔊 [TTS] Speaking:', text.substring(0, 50) + '...');
-        try {
-            setAiSpeaking(true);
-            if (isAiSpeaking) {
-                setStatus("AI is speaking...");
-            }
-    
-            const audioBlob = await googleSpeechService.textToSpeech(text);
-            await googleSpeechService.playAudio(audioBlob);
-    
-            setAiSpeaking(false);
-            setStatus("");
-            
-            console.log('🔊 [TTS] Speech completed, listenNext:', listenNext, 'step:', step);
-    
-            // Only auto-start listening for chat phase (step < 11), not QnA phase
-            if (listenNext && isMountedRef.current && step < 11) {
-                console.log('🎤 [TTS] Auto-starting listening after speech');
-                startListening();
-            }
-    
-            // Handle video step timing
-            if (stepNumber === 8) {
-                console.log('📹 [TTS] Starting video countdown');
-                setTimeout(() => {
-                    setCurrentDisplayText("");
-                    setStep(stepNumber);
-                }, 5000);
-    
-                for (let i = 5; i > 0; i--) {
-                    setTimeout(() => {
-                        setCurrentDisplayText(`Please be ready in ${i} seconds`);
-                    }, (5 - i) * 1000);
-                }
-                setTimeout(() => setCurrentDisplayText(""), 5000);
-            }
-        } catch (error) {
-            console.error('❌ [TTS] Error:', error);
-            setAiSpeaking(false);
-            setStatus("");
-            
-            // Fallback to browser TTS
-            if ("speechSynthesis" in window) {
-                const utterance = new SpeechSynthesisUtterance(text);
-                utterance.rate = 0.8;
-                utterance.onend = () => {
-                    if (listenNext && isMountedRef.current && step < 11) {
-                        startListening();
-                    }
-                };
-                window.speechSynthesis.speak(utterance);
-            }
-        }
-    }, [googleSpeechService, step]);
-
-    // Start listening
-    const startListening = useCallback(() => {
-        console.log('🎤 [LISTEN] Starting to listen');
-        if (!mediaRecorderRef.current) {
-            console.log('🎤 [LISTEN] No media recorder, initializing');
-            initMediaRecorder();
-            return;
-        }
-
-        if (mediaRecorderRef.current.state === 'inactive') {
-            setIsListening(true);
-            setStatus("Listening...");
-            audioChunksRef.current = [];
-            
-            mediaRecorderRef.current.start();
-            console.log('✅ [LISTEN] Recording started');
-            
-            // Auto-stop after 5 seconds
-            setTimeout(() => {
-                if (mediaRecorderRef.current?.state === 'recording') {
-                    console.log('⏱️ [LISTEN] Auto-stopping after 5 seconds');
-                    stopListening();
-                }
-            }, 5000);
-        }
-    }, [initMediaRecorder]);
-
-    // Stop listening
-    const stopListening = useCallback(() => {
-        console.log('🛑 [LISTEN] Stopping listening');
-        if (mediaRecorderRef.current?.state === 'recording') {
-            mediaRecorderRef.current.stop();
-            setIsListening(false);
-            console.log('✅ [LISTEN] Recording stopped');
-        }
-    }, []);
-
-    // Handle speech to text
-    const handleSpeechToText = useCallback(async (audioBlob) => {
-        console.log('🎤 [STT] Processing speech, blob size:', audioBlob.size);
-        try {
-            setStatus("Processing speech...");
-            const transcript = await googleSpeechService.speechToText(audioBlob);
-            
-            console.log('📝 [STT] Transcript:', transcript);
-            console.log('📝 [STT] Current Step:', step);
-            
-            if (transcript && transcript.trim()) {
-                // Determine which API to call based on current step
-                if (step >= 11) {
-                    console.log('📝 [STT] In QnA phase, sending to QnA API');
-                    await sendAnswerToAPI(transcript);
-                } else {
-                    console.log('📝 [STT] In chat phase, sending to chat API');
-                    await sendChat(transcript, assessmentIdRef.current);
-                }
-            } else {
-                console.log('⚠️ [STT] No transcript or empty');
-                setStatus("Could not understand. Please try again.");
-                setTimeout(() => {
-                    if (isMountedRef.current && step < 11) {
-                        startListening();
-                    }
-                }, 1000);
-            }
-        } catch (error) {
-            console.error('❌ [STT] Error:', error);
-            setStatus("Error processing speech. Please try again.");
-            setTimeout(() => {
-                if (isMountedRef.current && step < 11) {
-                    startListening();
-                }
-            }, 1000);
-        }
-    }, [step, sendAnswerToAPI]);
-
-    // Send chat message (for initial conversation) - FIXED
+    // Send chat message (for initial conversation)
     const sendChat = useCallback(async (message, assID, isVideo = false) => {
         console.log('💬 [CHAT] sendChat called');
         console.log('💬 [CHAT] Message:', isVideo ? 'VIDEO' : message);
@@ -456,7 +371,7 @@ export default function App() {
                                         hasInitializedQnARef.current = true;
                                         sendAnswerToAPI("Let's continue with the assessment");
                                     }
-                                }, 2000);
+                                }, 1000);
                             }, 500);
                             
                         } else {
@@ -534,6 +449,112 @@ export default function App() {
             return isVideo ? prevChats : updatedChats;
         });
     }, [isStart, mainService, speakText, startListening, stopListening, step, sendAnswerToAPI, convertChatHistoryToQnAFormat, chatHistory]);
+
+    // Handle speech to text - MOVED AFTER sendChat
+    const handleSpeechToText = useCallback(async (audioBlob) => {
+        console.log('🎤 [STT] Processing speech, blob size:', audioBlob.size);
+        try {
+            setStatus("Processing speech...");
+            const transcript = await googleSpeechService.speechToText(audioBlob);
+            
+            console.log('📝 [STT] Transcript:', transcript);
+            console.log('📝 [STT] Current Step:', step);
+            
+            if (transcript && transcript.trim()) {
+                // Determine which API to call based on current step
+                if (step >= 11 && step <=19 && !isQnAComplete) {
+                    console.log('📝 [STT] In QnA phase, sending to QnA API');
+                    await sendAnswerToAPI(transcript);
+                } else if (step >= 11 && step <= 19 && isQnAComplete) {
+                    console.log('📝 STT] QnA complete, free conversation mode');
+                    await sendAnswerToAPI(transcript);
+                }
+                else if (step < 11) {
+                    console.log('📝 [STT] In chat phase, sending to chat API');
+                    await sendChat(transcript, assessmentIdRef.current);
+                }
+            } else {
+                console.log('⚠️ [STT] No transcript or empty');
+                setStatus("Could not understand. Please try again.");
+                setTimeout(() => {
+                    if (isMountedRef.current && !aiSpeaking) {
+                        startListening();
+                    }
+                }, 1000);
+            }
+        } catch (error) {
+            console.error('❌ [STT] Error:', error);
+            setStatus("Error processing speech. Please try again.");
+            setTimeout(() => {
+                if (isMountedRef.current && !aiSpeaking) {
+                    startListening();
+                }
+            }, 1000);
+        }
+    }, [step, sendAnswerToAPI, googleSpeechService, startListening, sendChat, aiSpeaking]);
+
+    // Initialize media recorder
+    const initMediaRecorder = useCallback(async () => {
+        console.log('🎤 [MEDIA] Initializing media recorder');
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    sampleRate: 48000
+                } 
+            });
+            
+            streamRef.current = stream;
+            
+            const recorder = new MediaRecorder(stream, { 
+                mimeType: 'audio/webm;codecs=opus',
+                audioBitsPerSecond: 128000
+            });
+
+            recorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    audioChunksRef.current.push(event.data);
+                }
+            };
+
+            recorder.onstop = async () => {
+                console.log('🎤 [MEDIA] Recording stopped, chunks:', audioChunksRef.current.length);
+                const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+                audioChunksRef.current = [];
+                
+                if (audioBlob.size > 0) {
+                    // Store the blob to process after component is ready
+                    pendingAudioBlobRef.current = audioBlob;
+                }
+            };
+
+            mediaRecorderRef.current = recorder;
+            
+            // Initialize audio analyser
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            audioContextRef.current = audioContext;
+            const source = audioContext.createMediaStreamSource(stream);
+            const analyserNode = audioContext.createAnalyser();
+            analyserNode.fftSize = 256;
+            source.connect(analyserNode);
+            setAnalyser(analyserNode);
+            
+            console.log('✅ [MEDIA] Media recorder initialized');
+        } catch (error) {
+            console.error('❌ [MEDIA] Error initializing:', error);
+            setStatus("Microphone access denied");
+        }
+    }, []);
+
+    // Process pending audio blob
+    useEffect(() => {
+        if (pendingAudioBlobRef.current && handleSpeechToText) {
+            const blob = pendingAudioBlobRef.current;
+            pendingAudioBlobRef.current = null;
+            handleSpeechToText(blob);
+        }
+    }, [handleSpeechToText]);
 
     // Start assessment
     const startAssessment = useCallback(() => {
@@ -627,6 +648,7 @@ export default function App() {
         hasInitializedQnARef.current = false;
         lastProcessedQuestionRef.current = null;
         qnaApiCallInProgressRef.current = false;
+        pendingAudioBlobRef.current = null;
         
         // Reset state
         setStep(0);
@@ -652,7 +674,7 @@ export default function App() {
             </div>
             
             {/* Debug Info */}
-            <div className='absolute top-10 right-0 bg-black/80 text-white p-2 text-xs z-50'>
+            {/* <div className='absolute top-10 right-0 bg-black/80 text-white p-2 text-xs z-50'>
                 <div>Step: {step}</div>
                 <div>Stage: {stage}</div>
                 <div>Assessment ID: {assessmentId}</div>
@@ -662,7 +684,7 @@ export default function App() {
                 <div>Transitioning: {isTransitioningToQnARef.current ? 'Yes' : 'No'}</div>
                 <div>QnA Initialized: {hasInitializedQnARef.current ? 'Yes' : 'No'}</div>
                 <div>API Call in Progress: {qnaApiCallInProgressRef.current ? 'Yes' : 'No'}</div>
-            </div>
+            </div> */}
             
             <AiVideo step={step} next={sendPainPointVideo} />
             
@@ -674,6 +696,8 @@ export default function App() {
                 isListening={isListening}
                 onStartListening={startListening}
                 onStopListening={stopListening}
+                isAiSpeaking={aiSpeaking}
+                isQnAComplete={isQnAComplete}
             />
             
             {step < 8 && (
