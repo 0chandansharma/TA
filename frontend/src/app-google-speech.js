@@ -151,15 +151,26 @@ export default function App() {
     }, [googleSpeechService, step, startListening]);
 
     // Send answer to QnA API (for questionnaire phase)
-    const sendAnswerToAPI = useCallback(async (answer) => {
+    // Update the sendAnswerToAPI function with retry logic
+    const sendAnswerToAPI = useCallback(async (answer, retryCount = 0) => {
         console.log('📤 [QNA-API] sendAnswerToAPI called');
         console.log('📤 [QNA-API] Answer:', answer);
-        console.log('📤 [QNA-API] Assessment ID:', assessmentIdRef.current);
-        console.log('📤 [QNA-API] API call in progress?', qnaApiCallInProgressRef.current);
-        console.log('📤 [QNA-API] Is transitioning?', isTransitioningToQnARef.current);
+        console.log('📤 [QNA-API] Retry attempt:', retryCount);
+        
+        // Check if this is a ROM trigger based on the question
+        const currentQuestionText = nextQuestion?.question || "";
+        const isROMTrigger = currentQuestionText.toLowerCase().includes("video") && 
+                            currentQuestionText.toLowerCase().includes("move");
+        
+        console.log('📤 [QNA-API] Current question:', currentQuestionText);
+        console.log('📤 [QNA-API] Is ROM trigger?', isROMTrigger);
+        
+        // Maximum retry attempts
+        const MAX_RETRIES = 3;
+        const RETRY_DELAY = 2000; // 2 seconds
         
         // CRITICAL: Prevent duplicate API calls
-        if (qnaApiCallInProgressRef.current) {
+        if (qnaApiCallInProgressRef.current && retryCount === 0) {
             console.log('⚠️ [QNA-API] API call already in progress, SKIPPING');
             return;
         }
@@ -177,38 +188,52 @@ export default function App() {
             return;
         }
         
-        // Set flag to prevent duplicate calls
-        qnaApiCallInProgressRef.current = true;
-        setStatus("Processing answer...");
-
+        // Set flag to prevent duplicate calls (only on first attempt)
+        if (retryCount === 0) {
+            qnaApiCallInProgressRef.current = true;
+        }
+        
+        setStatus(retryCount > 0 ? `Retrying... (${retryCount}/${MAX_RETRIES})` : "Processing answer...");
+    
         // Create the message with user and prepare for response
         const newMessage = { user: answer, assistant: "" };
         
-        // Update QnA history first
-        const updatedHistory = [...QnAHistory, newMessage];
-        setQnAHistory(updatedHistory);
+        // Update QnA history first (only on first attempt)
+        let updatedHistory;
+        if (retryCount === 0) {
+            updatedHistory = [...QnAHistory, newMessage];
+            setQnAHistory(updatedHistory);
+        } else {
+            // On retry, use existing history
+            updatedHistory = QnAHistory;
+        }
         
         const bodyChat = {
             chat_history: updatedHistory
         };
-
+    
         console.log('📤 [QNA-API] Making API request');
         console.log('📤 [QNA-API] URL:', `/assessments/${currentAssessmentId}/questionnaires`);
         console.log('📤 [QNA-API] Payload:', JSON.stringify(bodyChat, null, 2));
-
+    
         try {
             const res = await mainService.chatWithQnAAI(bodyChat, '', currentAssessmentId);
             
             console.log('✅ [QNA-API] Response received');
+            console.log('✅ [QNA-API] Full response:', JSON.stringify(res, null, 2));
             console.log('✅ [QNA-API] Success?', res?.success);
+            console.log('✅ [QNA-API] Response data:', res?.data);
+            console.log('✅ [QNA-API] Action:', res?.data?.action);
             
             if (res?.success) {
                 setStage("QnA");
                 
                 const questionRes = res.data;
                 const questionText = questionRes.question || questionRes.response || "Please continue...";
+                const action = questionRes.action;
                 
                 console.log('📋 [QNA-API] Question text:', questionText);
+                console.log('📋 [QNA-API] Action received:', action);
                 console.log('📋 [QNA-API] Last processed question:', lastProcessedQuestionRef.current);
                 
                 // Check if this is a duplicate question
@@ -250,29 +275,84 @@ export default function App() {
                 setStatus("");
                 
                 // Check for phase transitions
-                if (questionRes.action === "rom_api") {
+                console.log('🎯 [QNA-API] Checking transitions - Action:', action);
+                
+                if (action === "rom_api") {
                     console.log('🎯 [QNA-API] Moving to ROM phase');
                     setIsQnAComplete(true);
-                    setStep(20);
-                } else if (questionRes.action === "dashboard_api") {
+                    setStep(21);
+                } else if (action === "dashboard_api") {
                     console.log('🎯 [QNA-API] Moving to Dashboard phase');
                     setIsQnAComplete(true);
                     setStep(24);
-                }
-                else if (questionRes.action === "complete" || questionRes.action === "end_questionnaire") {
+                } else if (action === "complete" || action === "end_questionnaire") {
                     console.log('🎯 [QNA-API] QnA complete, enabling free conversation');
                     setIsQnAComplete(true);
+                } else {
+                    console.log('🎯 [QNA-API] No transition action, continuing QnA');
                 }
             }
         } catch (error) {
             console.error('❌ [QNA-API] Error:', error);
-            setStatus("Error getting next question");
+            console.error('❌ [QNA-API] Error response:', error.response?.data);
+            
+            // Check if we should retry
+            if (retryCount < MAX_RETRIES) {
+                console.log(`🔄 [QNA-API] Will retry in ${RETRY_DELAY/1000} seconds...`);
+                setStatus(`Error occurred. Retrying in ${RETRY_DELAY/1000} seconds...`);
+                
+                // Schedule retry
+                setTimeout(() => {
+                    console.log(`🔄 [QNA-API] Retrying attempt ${retryCount + 1}/${MAX_RETRIES}`);
+                    sendAnswerToAPI(answer, retryCount + 1);
+                }, RETRY_DELAY);
+            } else {
+                // Max retries reached
+                console.error('❌ [QNA-API] Max retries reached, giving up');
+                
+                // Special handling for ROM trigger questions
+                if (isROMTrigger && (answer.toLowerCase().includes("ready") || 
+                                     answer.toLowerCase().includes("yes") || 
+                                     answer.toLowerCase().includes("i am ready"))) {
+                    console.log('🚨 [QNA-API] Detected ROM trigger with ready answer, forcing transition');
+                    setStatus("Moving to movement assessment...");
+                    
+                    // Force transition to ROM
+                    setTimeout(() => {
+                        setIsQnAComplete(true);
+                        setStep(21);
+                        qnaApiCallInProgressRef.current = false;
+                    }, 2000);
+                    
+                    return;
+                }
+                
+                setStatus("Failed after multiple attempts. Please try again.");
+                
+                // Reset state so user can try again manually
+                qnaApiCallInProgressRef.current = false;
+                
+                // Optionally remove the last message from history since it failed
+                setQnAHistory(prev => {
+                    if (retryCount === 0 && prev.length > 0) {
+                        return prev.slice(0, -1);
+                    }
+                    return prev;
+                });
+                
+                // Allow user to continue after showing error for a few seconds
+                setTimeout(() => {
+                    setStatus("");
+                }, 3000);
+            }
         } finally {
-            // Reset the flag
-            qnaApiCallInProgressRef.current = false;
-            console.log('🔓 [QNA-API] API call completed, flag reset');
+            // Reset the flag only if not retrying
+            if (retryCount >= MAX_RETRIES || retryCount === 0) {
+                qnaApiCallInProgressRef.current = false;
+                console.log('🔓 [QNA-API] API call completed, flag reset');
+            }
         }
-    }, [QnAHistory, mainService, speakText]);
+    }, [QnAHistory, mainService, speakText, nextQuestion]);
 
     // Send chat message (for initial conversation)
     const sendChat = useCallback(async (message, assID, isVideo = false) => {
@@ -345,34 +425,37 @@ export default function App() {
                                 return updated;
                             });
     
-                            // Move to QnA stage
-                            console.log('🎯 [CHAT] Setting step to 11');
-                            setStep(11);
-                            setAnalyser(false);
-                            
-                            // Speak transition message
-                            setCurrentDisplayText(`${identifiedPart} identified. Let's continue with some questions.`);
-                            await speakText(`${identifiedPart} identified. Let's continue with some questions.`, true, false);
-                            
-                            // Convert chat history AFTER speaking
-                            setTimeout(() => {
-                                console.log('🔄 [CHAT] Converting chat history for QnA');
-                                const currentHistory = chatHistory;
-                                const convertedHistory = convertChatHistoryToQnAFormat([...currentHistory, bodyPartMessage]);
-                                setQnAHistory(convertedHistory);
+                            // Check the action to determine next step
+                            if (next_action === "restart" || next_action === "next_api") {
+                                // Both actions should move to QnA stage
+                                console.log('🎯 [CHAT] Moving to QnA stage');
+                                setStep(11);
+                                setAnalyser(false);
                                 
-                                // Clear transition flag and initialize QnA
+                                // Speak transition message
+                                setCurrentDisplayText(`${identifiedPart} identified. Let's continue with some questions.`);
+                                await speakText(`${identifiedPart} identified. Let's continue with some questions.`, true, false);
+                                
+                                // Convert chat history AFTER speaking
                                 setTimeout(() => {
-                                    console.log('🚀 [CHAT] Initializing QnA phase');
-                                    isTransitioningToQnARef.current = false;
+                                    console.log('🔄 [CHAT] Converting chat history for QnA');
+                                    const currentHistory = chatHistory;
+                                    const convertedHistory = convertChatHistoryToQnAFormat([...currentHistory, bodyPartMessage]);
+                                    setQnAHistory(convertedHistory);
                                     
-                                    // Only make the initial call if not already done
-                                    if (!hasInitializedQnARef.current) {
-                                        hasInitializedQnARef.current = true;
-                                        sendAnswerToAPI("Let's continue with the assessment");
-                                    }
-                                }, 1000);
-                            }, 500);
+                                    // Clear transition flag and initialize QnA
+                                    setTimeout(() => {
+                                        console.log('🚀 [CHAT] Initializing QnA phase');
+                                        isTransitioningToQnARef.current = false;
+                                        
+                                        // Only make the initial call if not already done
+                                        if (!hasInitializedQnARef.current) {
+                                            hasInitializedQnARef.current = true;
+                                            sendAnswerToAPI("Let's continue with the assessment");
+                                        }
+                                    }, 1000);
+                                }, 500);
+                            }
                             
                         } else {
                             // Update chat history with response
@@ -449,7 +532,6 @@ export default function App() {
             return isVideo ? prevChats : updatedChats;
         });
     }, [isStart, mainService, speakText, startListening, stopListening, step, sendAnswerToAPI, convertChatHistoryToQnAFormat, chatHistory]);
-
     // Handle speech to text - MOVED AFTER sendChat
     const handleSpeechToText = useCallback(async (audioBlob) => {
         console.log('🎤 [STT] Processing speech, blob size:', audioBlob.size);
